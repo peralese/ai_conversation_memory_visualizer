@@ -6,6 +6,7 @@ Requires-Python: >=3.10
 Requires-Dist: fastapi>=0.115.0
 Requires-Dist: uvicorn>=0.30.0
 Requires-Dist: pydantic>=2.8.0
+Requires-Dist: python-multipart>=0.0.9
 Requires-Dist: python-dateutil>=2.9.0
 Requires-Dist: numpy>=1.26.0
 Requires-Dist: scikit-learn>=1.5.0
