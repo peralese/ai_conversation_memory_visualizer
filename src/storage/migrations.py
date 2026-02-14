@@ -74,6 +74,47 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_topic_events_cluster_ts ON topic_events(cluster_id, timestamp);
         """,
     )
+    ,
+    (
+        2,
+        """
+        CREATE TABLE IF NOT EXISTS subclusters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parent_cluster_id INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (parent_cluster_id) REFERENCES clusters(cluster_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS subcluster_membership (
+            subcluster_id INTEGER NOT NULL,
+            message_id TEXT NOT NULL,
+            PRIMARY KEY (subcluster_id, message_id),
+            FOREIGN KEY (subcluster_id) REFERENCES subclusters(id),
+            FOREIGN KEY (message_id) REFERENCES messages(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_subclusters_parent ON subclusters(parent_cluster_id);
+        CREATE INDEX IF NOT EXISTS idx_subcluster_membership_subcluster ON subcluster_membership(subcluster_id);
+        """,
+    )
+    ,
+    (
+        3,
+        """
+        CREATE TABLE IF NOT EXISTS cluster_centroids_time (
+            level TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            bucket_start_date TEXT NOT NULL,
+            centroid_vector_json TEXT NOT NULL,
+            message_count INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (level, entity_id, bucket_start_date)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_centroids_time_level_bucket ON cluster_centroids_time(level, bucket_start_date);
+        """,
+    )
 ]
 
 

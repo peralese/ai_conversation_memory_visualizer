@@ -64,6 +64,29 @@ section {
   gap: 0.5rem;
 }
 
+.controls {
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  background: #e8f3ea;
+  color: #205c2f;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

@@ -4,6 +4,9 @@ import ConversationsPage from './pages/ConversationsPage'
 import ClusterExplorerPage from './pages/ClusterExplorerPage'
 import TimelinePage from './pages/TimelinePage'
 import ClusterDetailPage from './pages/ClusterDetailPage'
+import ModelSpecializationPage from './pages/ModelSpecializationPage'
+import DriftPage from './pages/DriftPage'
+import ReportPage from './pages/ReportPage'
 
 export default function App() {
   return (
@@ -15,6 +18,9 @@ export default function App() {
           <NavLink to="/conversations">Conversations</NavLink>
           <NavLink to="/clusters">Clusters</NavLink>
           <NavLink to="/timeline">Timeline</NavLink>
+          <NavLink to="/specialization">Specialization</NavLink>
+          <NavLink to="/drift">Drift</NavLink>
+          <NavLink to="/report">Report</NavLink>
         </nav>
       </aside>
       <main className="content">
@@ -24,6 +30,9 @@ export default function App() {
           <Route path="/clusters" element={<ClusterExplorerPage />} />
           <Route path="/timeline" element={<TimelinePage />} />
           <Route path="/clusters/:clusterId" element={<ClusterDetailPage />} />
+          <Route path="/specialization" element={<ModelSpecializationPage />} />
+          <Route path="/drift" element={<DriftPage />} />
+          <Route path="/report" element={<ReportPage />} />
         </Routes>
       </main>
     </div>

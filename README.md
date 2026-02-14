@@ -87,6 +87,19 @@ python3 -m src.cli embed --since 2024-01-01T00:00:00+00:00 --redact
 ```bash
 python3 -m src.cli cluster --k 4
 ```
+- Profile dataset skew:
+```bash
+python3 -m src.cli profile --top-n 30
+```
+- Compute drift cache:
+```bash
+python3 -m src.cli drift --level cluster
+```
+- Generate cognitive summary report:
+```bash
+python3 -m src.cli report --format md --out reports/cognitive_summary.md
+python3 -m src.cli report --format json --out reports/cognitive_summary.json
+```
 
 ## OpenAI Embeddings
 - Default provider is OpenAI if `OPENAI_API_KEY` is set.

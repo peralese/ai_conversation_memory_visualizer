@@ -6,6 +6,12 @@ export async function apiGet(path) {
   return resp.json()
 }
 
+export async function apiGetText(path) {
+  const resp = await fetch(`${API_BASE}${path}`)
+  if (!resp.ok) throw new Error(await resp.text())
+  return resp.text()
+}
+
 export async function apiPost(path, body) {
   const resp = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
