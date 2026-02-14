@@ -52,6 +52,11 @@ def test_detect_gemini_fixture_json():
     assert detect_source(path) == SourceType.GEMINI
 
 
+def test_detect_gemini_safehtml_activity_fixture_json():
+    path = "tests/fixtures/gemini/Takeout/My Activity/Gemini/MyActivity_safehtml.json"
+    assert detect_source(path) == SourceType.GEMINI
+
+
 def test_detect_gemini_from_zip_fixture(tmp_path):
     zip_path = tmp_path / "gemini_takeout.zip"
     with zipfile.ZipFile(zip_path, "w") as zf:

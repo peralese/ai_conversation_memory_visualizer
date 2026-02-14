@@ -1,0 +1,13 @@
+[
+  {
+    "header": "Gemini Apps",
+    "title": "Prompted rewrite \"The migration plan needs a better risk section\"",
+    "time": "2025-02-28T19:09:26.921Z",
+    "products": ["Gemini Apps"],
+    "safeHtmlItem": [
+      {
+        "html": "<p>Here are a few rewrites, focusing on clarity.</p><ul><li>Add explicit risk assumptions.</li><li>Call out open dependencies.</li></ul>"
+      }
+    ]
+  }
+]

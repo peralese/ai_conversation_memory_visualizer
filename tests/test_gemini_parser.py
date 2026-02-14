@@ -35,6 +35,21 @@ def test_gemini_parser_activity_fixture():
     assert conversation["messages"][1]["text"] == "Summary line 1\n\nSummary line 2"
 
 
+def test_gemini_parser_activity_safehtml_fixture():
+    parser = GeminiParser()
+    path = "tests/fixtures/gemini/Takeout/My Activity/Gemini/MyActivity_safehtml.json"
+    conversations = parser.parse_file(path)
+
+    assert len(conversations) == 1
+    conversation = conversations[0]
+    assert len(conversation["messages"]) == 2
+    assert conversation["messages"][0]["role"] == "user"
+    assert conversation["messages"][1]["role"] == "assistant"
+    assert "migration plan needs a better risk section" in conversation["messages"][0]["text"]
+    assert "Here are a few rewrites" in conversation["messages"][1]["text"]
+    assert "<p>" not in conversation["messages"][1]["text"]
+
+
 def test_gemini_parser_zip_takeout(tmp_path):
     zip_path = tmp_path / "gemini_takeout.zip"
     with zipfile.ZipFile(zip_path, "w") as zf:

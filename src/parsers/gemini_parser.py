@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import logging
+import re
 import uuid
 import zipfile
 from pathlib import Path
@@ -126,7 +128,7 @@ def _discover_candidates(payload: Any) -> tuple[list[dict[str, Any]], str]:
             value = payload.get(key)
             if isinstance(value, list):
                 if key in ("events", "items") and value and _looks_like_activity_record(value[0]):
-                    return [{"events": value, "source_container": key}], f"container:{key}:events"
+                    return _event_records_to_candidates(value, key), f"container:{key}:events"
                 return [v for v in value if isinstance(v, dict)], f"container:{key}"
         if isinstance(payload.get("messages"), list) or isinstance(payload.get("turns"), list):
             return [payload], "single:conversation"
@@ -139,7 +141,7 @@ def _discover_candidates(payload: Any) -> tuple[list[dict[str, Any]], str]:
         if all(isinstance(v, dict) for v in payload):
             sample = payload[0]
             if _looks_like_activity_record(sample):
-                return [{"events": payload, "source_container": "list"}], "list:events"
+                return _event_records_to_candidates(payload, "list"), "list:events"
             if _looks_like_conversation_record(sample):
                 return [v for v in payload if isinstance(v, dict)], "list:conversations"
             if _looks_like_message_record(sample):
@@ -153,6 +155,14 @@ def _parse_candidate(candidate: dict[str, Any], source_name: str, index: int) ->
     if isinstance(candidate.get("events"), list):
         return _parse_event_activity_conversation(candidate.get("events"), source_name, index)
     return _parse_structured_conversation(candidate, source_name, index)
+
+
+def _event_records_to_candidates(records: list[Any], source_container: str) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for record in records:
+        if isinstance(record, dict):
+            candidates.append({"events": [record], "source_container": source_container})
+    return candidates
 
 
 def _parse_structured_conversation(record: dict[str, Any], source_name: str, index: int) -> dict[str, Any] | None:
@@ -300,6 +310,10 @@ def _messages_from_event(event: dict[str, Any], event_idx: int) -> list[dict[str
 
     prompt_obj = event.get("prompt") or event.get("user_query") or event.get("query") or event.get("input")
     response_obj = event.get("response") or event.get("model_response") or event.get("output") or event.get("answer")
+    if prompt_obj is None:
+        prompt_obj = _prompt_from_activity_title(event)
+    if response_obj is None:
+        response_obj = _response_from_safe_html_item(event)
     standalone_text = _extract_text(event)
 
     prompt_text = _flatten_text(prompt_obj)
@@ -362,11 +376,13 @@ def _flatten_text(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
-        return value.strip()
+        return _clean_text(value)
     if isinstance(value, list):
         parts = [part for part in (_flatten_text(v) for v in value) if part]
         return "\n\n".join(parts).strip()
     if isinstance(value, dict):
+        if "html" in value:
+            return _clean_text(_strip_html(_as_str(value.get("html"))))
         if "text" in value:
             return _flatten_text(value.get("text"))
         if "content" in value:
@@ -376,6 +392,39 @@ def _flatten_text(value: Any) -> str:
         if value.get("type") == "text":
             return _flatten_text(value.get("value"))
     return ""
+
+
+def _prompt_from_activity_title(event: dict[str, Any]) -> str:
+    title = _as_str(event.get("title"))
+    if not title:
+        return ""
+    match = re.search(r'["\'](.+?)["\']', title)
+    if match:
+        return _clean_text(match.group(1))
+    # Keep the full title as a fallback; this preserves context even if quoted prompt isn't present.
+    return _clean_text(title)
+
+
+def _response_from_safe_html_item(event: dict[str, Any]) -> str:
+    container = event.get("safeHtmlItem") or event.get("safeHtmlItems") or event.get("eventItem")
+    if not isinstance(container, list):
+        return ""
+    parts: list[str] = []
+    for item in container:
+        text = _flatten_text(item)
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts).strip()
+
+
+def _strip_html(raw_html: str) -> str:
+    no_tags = re.sub(r"<[^>]+>", " ", raw_html)
+    return html.unescape(no_tags)
+
+
+def _clean_text(text: str) -> str:
+    collapsed = re.sub(r"\s+", " ", text or "").strip()
+    return collapsed
 
 
 def _map_role(role_value: Any) -> str:
