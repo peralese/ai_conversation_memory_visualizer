@@ -1,0 +1,33 @@
+{
+  "conversations": [
+    {
+      "id": "gemini_conv_1",
+      "title": "Weekend Plan",
+      "create_time": "2025-01-12T14:00:00Z",
+      "update_time": "2025-01-12T14:02:00Z",
+      "turns": [
+        {
+          "id": "gmsg_u1",
+          "author": "user",
+          "timestampMs": 1736690400000,
+          "content": {
+            "parts": [
+              {"text": "Plan a weekend in Seattle"}
+            ]
+          }
+        },
+        {
+          "id": "gmsg_a1",
+          "author": "model",
+          "timestampMs": 1736690415000,
+          "content": {
+            "parts": [
+              {"text": "Day 1: Pike Place Market"},
+              {"text": "Day 2: Museum + ferry ride"}
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

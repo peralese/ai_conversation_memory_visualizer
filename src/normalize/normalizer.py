@@ -14,6 +14,8 @@ def normalize(raw_conversation: dict[str, Any], source: SourceType) -> Canonical
         return _normalize_chatgpt(raw_conversation)
     if source == SourceType.CLAUDE:
         return _normalize_claude(raw_conversation)
+    if source == SourceType.GEMINI:
+        return _normalize_gemini(raw_conversation)
     raise ValueError(f"Normalizer is not implemented for source {source}")
 
 
@@ -144,6 +146,67 @@ def _normalize_claude(raw: dict[str, Any]) -> CanonicalConversationBundle:
     return CanonicalConversationBundle(conversation=conversation, messages=messages)
 
 
+def _normalize_gemini(raw: dict[str, Any]) -> CanonicalConversationBundle:
+    conv_id = str(raw.get("id") or raw.get("conversation_id") or _fallback_id(raw))
+    created = _normalize_timestamp(raw.get("created_at") or raw.get("create_time"))
+    updated = _normalize_timestamp(raw.get("updated_at") or raw.get("update_time") or created)
+
+    messages_raw = raw.get("messages") or []
+    participant_roles = sorted(
+        {
+            _normalize_role(str((msg or {}).get("role") or "user")).value
+            for msg in messages_raw
+            if isinstance(msg, dict)
+        }
+    )
+    if not participant_roles:
+        participant_roles = ["user", "assistant"]
+
+    conversation = Conversation(
+        id=conv_id,
+        source=SourceType.GEMINI,
+        title=(raw.get("title") or f"Gemini Conversation {conv_id[:8]}").strip() or "Untitled",
+        created_at=created,
+        updated_at=updated,
+        participants=participant_roles,
+        tags=[],
+        raw_metadata=raw.get("raw_metadata") or {},
+    )
+
+    messages: list[Message] = []
+    for idx, msg in enumerate(messages_raw):
+        if not isinstance(msg, dict):
+            continue
+        text = (
+            flatten_content_parts(msg.get("text"))
+            or flatten_content_parts(msg.get("content"))
+            or flatten_content_parts(msg.get("message"))
+        )
+        if not text:
+            continue
+
+        msg_time = _normalize_timestamp(msg.get("timestamp") or msg.get("created_at") or created)
+        token_count = msg.get("token_count")
+        if not isinstance(token_count, int):
+            token_count = None
+
+        messages.append(
+            Message(
+                id=str(msg.get("id") or f"{conv_id}-msg-{idx}"),
+                conversation_id=conv_id,
+                timestamp=msg_time.isoformat(),
+                speaker_role=_normalize_role(str(msg.get("role") or msg.get("speaker_role") or "user").lower()),
+                text=text,
+                parent_message_id=msg.get("parent_message_id"),
+                token_count=token_count,
+                raw_metadata=msg.get("raw_metadata") if isinstance(msg.get("raw_metadata"), dict) else {},
+            )
+        )
+
+    messages.sort(key=lambda m: m.timestamp)
+    return CanonicalConversationBundle(conversation=conversation, messages=messages)
+
+
 def _normalize_role(role: str) -> SpeakerRole:
     if role in ("assistant", "user", "system", "tool"):
         return SpeakerRole(role)
@@ -157,10 +220,18 @@ def _normalize_timestamp(value: Any) -> datetime:
         return datetime.now(timezone.utc)
 
     if isinstance(value, (int, float)):
-        # ChatGPT exports often use unix seconds.
+        # Most exports use unix seconds; some use milliseconds.
+        if value > 1e11:
+            value = value / 1000.0
         return datetime.fromtimestamp(value, tz=timezone.utc)
 
     if isinstance(value, str):
+        numeric = value.strip()
+        if numeric.isdigit():
+            num = float(numeric)
+            if num > 1e11:
+                num = num / 1000.0
+            return datetime.fromtimestamp(num, tz=timezone.utc)
         dt = dt_parser.parse(value)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)

@@ -45,3 +45,28 @@ def test_detect_gemini_by_filename(tmp_path):
     p = tmp_path / "gemini_export.json"
     p.write_text("[]", encoding="utf-8")
     assert detect_source(str(p)) == SourceType.GEMINI
+
+
+def test_detect_gemini_fixture_json():
+    path = "tests/fixtures/gemini/Takeout/My Activity/Gemini/Conversations.json"
+    assert detect_source(path) == SourceType.GEMINI
+
+
+def test_detect_gemini_from_zip_fixture(tmp_path):
+    zip_path = tmp_path / "gemini_takeout.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.write(
+            "tests/fixtures/gemini/Takeout/My Activity/Gemini/Conversations.json",
+            arcname="Takeout/My Activity/Gemini/Conversations.json",
+        )
+    assert detect_source(str(zip_path)) == SourceType.GEMINI
+
+
+def test_detect_gemini_from_directory_fixture(tmp_path):
+    p = tmp_path / "Takeout" / "My Activity" / "Gemini"
+    p.mkdir(parents=True)
+    (p / "My_Activity.json").write_text(
+        '[{"title":"Gemini asked","time":"2025-02-05T10:00:00Z","product":"Gemini","prompt":{"text":"hello"}}]',
+        encoding="utf-8",
+    )
+    assert detect_source(str(tmp_path)) == SourceType.GEMINI

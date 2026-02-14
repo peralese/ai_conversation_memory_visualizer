@@ -7,6 +7,9 @@ from typing import Any
 
 from src.models import SourceType
 
+_GEMINI_FILENAME_HINTS = ("gemini", "bard", "my_activity")
+_GEMINI_PATH_HINTS = ("takeout", "my activity", "gemini")
+
 
 def detect_source(file_path: str) -> SourceType:
     path = Path(file_path)
@@ -40,6 +43,7 @@ def _load_json(path: Path) -> Any:
 
 def _detect_from_directory(path: Path) -> SourceType:
     json_files = sorted([p for p in path.rglob("*.json") if p.is_file()])
+    json_files.sort(key=lambda p: _gemini_path_score(str(p)), reverse=True)
     for json_file in json_files:
         detected = detect_source(str(json_file))
         if detected != SourceType.UNKNOWN:
@@ -58,7 +62,7 @@ def _detect_from_zip(path: Path) -> SourceType:
                     return SourceType.CLAUDE
                 if "chatgpt" in lower:
                     return SourceType.CHATGPT
-                if "gemini" in lower or "bard" in lower:
+                if _gemini_path_score(lower) > 0:
                     return SourceType.GEMINI
 
                 with zf.open(name) as f:
@@ -88,6 +92,10 @@ def _detect_by_structure(payload: Any) -> SourceType:
                 return SourceType.GEMINI
             if _looks_like_claude_message(sample):
                 return SourceType.CLAUDE
+            if _looks_like_gemini_message(sample):
+                return SourceType.GEMINI
+            if _looks_like_gemini_activity_record(sample):
+                return SourceType.GEMINI
 
     if isinstance(payload, dict):
         keys = set(payload.keys())
@@ -95,6 +103,8 @@ def _detect_by_structure(payload: Any) -> SourceType:
             return SourceType.CHATGPT
         if "claude_conversations" in keys:
             return SourceType.CLAUDE
+        if "gemini_threads" in keys:
+            return SourceType.GEMINI
         for container_key in ("conversations", "chats", "data"):
             value = payload.get(container_key)
             if isinstance(value, list) and value:
@@ -106,9 +116,13 @@ def _detect_by_structure(payload: Any) -> SourceType:
                         return SourceType.CLAUDE
                     if "messages" in sample and _looks_like_claude_messages(sample.get("messages")):
                         return SourceType.CLAUDE
+                    if _looks_like_gemini_conversation(sample):
+                        return SourceType.GEMINI
         if "messages" in keys and _looks_like_claude_messages(payload.get("messages")):
             return SourceType.CLAUDE
-        if "gemini_threads" in keys:
+        if _looks_like_gemini_conversation(payload):
+            return SourceType.GEMINI
+        if "events" in keys and _looks_like_gemini_events(payload.get("events")):
             return SourceType.GEMINI
 
     return SourceType.UNKNOWN
@@ -128,3 +142,62 @@ def _looks_like_claude_message(message: dict[str, Any]) -> bool:
     if role in ("assistant", "claude", "human", "user"):
         return any(k in message for k in ("content", "text", "message"))
     return False
+
+
+def _looks_like_gemini_message(message: Any) -> bool:
+    if not isinstance(message, dict):
+        return False
+    role = str(message.get("role") or message.get("author") or message.get("sender") or "").lower()
+    if role in ("model", "assistant", "gemini", "bard", "user", "human"):
+        return any(k in message for k in ("content", "text", "parts", "message"))
+    return False
+
+
+def _looks_like_gemini_conversation(record: Any) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if isinstance(record.get("turns"), list) or (
+        isinstance(record.get("messages"), list) and _looks_like_gemini_messages(record.get("messages"))
+    ):
+        return True
+    model_hint = str(record.get("model") or record.get("app") or record.get("platform") or "").lower()
+    if "gemini" in model_hint or "bard" in model_hint:
+        return True
+    return False
+
+
+def _looks_like_gemini_messages(messages: Any) -> bool:
+    if not isinstance(messages, list) or not messages:
+        return False
+    sample = messages[0]
+    return _looks_like_gemini_message(sample)
+
+
+def _looks_like_gemini_events(events: Any) -> bool:
+    if not isinstance(events, list) or not events:
+        return False
+    sample = events[0]
+    return _looks_like_gemini_activity_record(sample)
+
+
+def _looks_like_gemini_activity_record(sample: Any) -> bool:
+    if not isinstance(sample, dict):
+        return False
+    title = str(sample.get("title") or sample.get("header") or "").lower()
+    product = str(sample.get("product") or sample.get("products") or "").lower()
+    has_time = any(k in sample for k in ("time", "timestamp", "time_usec", "timeUsec"))
+    return has_time and (
+        "gemini" in title
+        or "bard" in title
+        or "gemini" in product
+        or "bard" in product
+        or "my activity" in title
+        or "prompt" in sample
+    )
+
+
+def _gemini_path_score(path_name: str) -> int:
+    lowered = path_name.lower()
+    score = sum(1 for hint in _GEMINI_FILENAME_HINTS if hint in lowered)
+    score += sum(1 for hint in _GEMINI_PATH_HINTS if hint in lowered)
+    return score

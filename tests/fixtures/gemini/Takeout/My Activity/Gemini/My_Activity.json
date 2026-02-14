@@ -1,0 +1,17 @@
+[
+  {
+    "id": "evt_1",
+    "title": "Gemini asked",
+    "time": "2025-02-05T10:00:00Z",
+    "product": "Gemini",
+    "prompt": {
+      "text": "Summarize this status update"
+    },
+    "response": {
+      "parts": [
+        {"text": "Summary line 1"},
+        {"text": "Summary line 2"}
+      ]
+    }
+  }
+]

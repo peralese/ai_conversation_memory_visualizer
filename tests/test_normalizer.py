@@ -36,3 +36,24 @@ def test_normalize_claude_bundle():
     assert len(bundle.messages) == 2
     assert bundle.messages[0].speaker_role.value == "user"
     assert bundle.messages[1].speaker_role.value == "assistant"
+
+
+def test_normalize_gemini_bundle():
+    payload = {
+        "id": "gemini_conv_1",
+        "title": "Gemini Test",
+        "created_at": 1736690400000,
+        "updated_at": 1736690415000,
+        "messages": [
+            {"id": "m1", "role": "user", "timestamp": 1736690400000, "text": "Hi"},
+            {"id": "m2", "role": "assistant", "timestamp": 1736690415000, "text": "Hello"},
+        ],
+    }
+    bundle = normalize(payload, SourceType.GEMINI)
+
+    assert bundle.conversation.id == "gemini_conv_1"
+    assert bundle.conversation.source == SourceType.GEMINI
+    assert len(bundle.messages) == 2
+    assert bundle.messages[0].speaker_role.value == "user"
+    assert bundle.messages[1].speaker_role.value == "assistant"
+    assert bundle.messages[0].timestamp.startswith("2025-")

@@ -13,7 +13,7 @@ Local-first web app for ingesting LLM conversation exports, normalizing into a c
 
 ## Repo Layout
 - `src/detection`: source format detection
-- `src/parsers`: source-specific parsers (ChatGPT + Claude, Gemini stub)
+- `src/parsers`: source-specific parsers (ChatGPT + Claude + Gemini)
 - `src/normalize`: canonical normalizer
 - `src/storage`: SQLite repository + migrations
 - `src/redaction`: PII redaction layer
@@ -76,6 +76,8 @@ npm run dev
 python3 -m src.cli import fixtures/chatgpt_export_sample.json
 python3 -m src.cli import /path/to/claude-export.json
 python3 -m src.cli import /path/to/claude-export.zip
+python3 -m src.cli import /path/to/gemini-takeout.zip
+python3 -m src.cli import /path/to/Takeout/My\\ Activity/Gemini
 ```
 - Embed:
 ```bash
@@ -112,3 +114,7 @@ python3 -m pytest -q
 ## Claude Export
 - In Claude, request export via `Settings -> Privacy -> Export data`.
 - Import the resulting Claude JSON, ZIP, or an extracted export directory with the same `import` CLI/API flow.
+
+## Gemini Export
+- Export Gemini data via Google Takeout (`Gemini Apps Activity / My Activity`).
+- Import the resulting Takeout ZIP or extracted folder with the same `import` CLI/API flow.
