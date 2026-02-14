@@ -12,6 +12,8 @@ from src.parsers.chatgpt_parser import flatten_content_parts
 def normalize(raw_conversation: dict[str, Any], source: SourceType) -> CanonicalConversationBundle:
     if source == SourceType.CHATGPT:
         return _normalize_chatgpt(raw_conversation)
+    if source == SourceType.CLAUDE:
+        return _normalize_claude(raw_conversation)
     raise ValueError(f"Normalizer is not implemented for source {source}")
 
 
@@ -71,6 +73,70 @@ def _normalize_chatgpt(raw: dict[str, Any]) -> CanonicalConversationBundle:
                     "end_turn": message.get("end_turn"),
                     "weight": message.get("weight"),
                 },
+            )
+        )
+
+    messages.sort(key=lambda m: m.timestamp)
+    return CanonicalConversationBundle(conversation=conversation, messages=messages)
+
+
+def _normalize_claude(raw: dict[str, Any]) -> CanonicalConversationBundle:
+    conv_id = str(raw.get("id") or raw.get("conversation_id") or _fallback_id(raw))
+    created = _normalize_timestamp(raw.get("created_at") or raw.get("create_time"))
+    updated = _normalize_timestamp(raw.get("updated_at") or raw.get("update_time") or created)
+
+    messages_raw = raw.get("messages") or []
+    participant_roles = sorted(
+        {
+            _normalize_role(str((msg or {}).get("role") or "user")).value
+            for msg in messages_raw
+            if isinstance(msg, dict)
+        }
+    )
+    if not participant_roles:
+        participant_roles = ["user", "assistant"]
+
+    conversation = Conversation(
+        id=conv_id,
+        source=SourceType.CLAUDE,
+        title=(raw.get("title") or f"Claude Conversation {conv_id[:8]}").strip() or "Untitled",
+        created_at=created,
+        updated_at=updated,
+        participants=participant_roles,
+        tags=[],
+        raw_metadata=raw.get("raw_metadata") or {},
+    )
+
+    messages: list[Message] = []
+    for idx, msg in enumerate(messages_raw):
+        if not isinstance(msg, dict):
+            continue
+
+        text = (
+            flatten_content_parts(msg.get("text"))
+            or flatten_content_parts(msg.get("content"))
+            or flatten_content_parts(msg.get("message"))
+        )
+        if not text:
+            continue
+
+        role = _normalize_role(str(msg.get("role") or msg.get("speaker_role") or "user").lower())
+        msg_time = _normalize_timestamp(msg.get("timestamp") or msg.get("created_at") or created)
+        msg_id = str(msg.get("id") or f"{conv_id}-msg-{idx}")
+        token_count = msg.get("token_count")
+        if not isinstance(token_count, int):
+            token_count = None
+
+        messages.append(
+            Message(
+                id=msg_id,
+                conversation_id=conv_id,
+                timestamp=msg_time.isoformat(),
+                speaker_role=role,
+                text=text,
+                parent_message_id=msg.get("parent_message_id"),
+                token_count=token_count,
+                raw_metadata=msg.get("raw_metadata") if isinstance(msg.get("raw_metadata"), dict) else {},
             )
         )
 

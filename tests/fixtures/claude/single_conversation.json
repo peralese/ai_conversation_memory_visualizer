@@ -1,0 +1,24 @@
+{
+  "id": "claude_conv_1",
+  "title": "Claude Product Brainstorm",
+  "created_at": "2025-01-10T12:00:00Z",
+  "updated_at": "2025-01-10T12:05:00Z",
+  "messages": [
+    {
+      "id": "cmsg_1",
+      "role": "human",
+      "created_at": "2025-01-10T12:00:10Z",
+      "content": "Give me three product ideas."
+    },
+    {
+      "id": "cmsg_2",
+      "role": "assistant",
+      "created_at": "2025-01-10T12:00:20Z",
+      "content": [
+        {"type": "text", "text": "1) Calendar for focused work"},
+        {"type": "image", "url": "ignored"},
+        {"type": "text", "text": "2) Async standup summarizer"}
+      ]
+    }
+  ]
+}

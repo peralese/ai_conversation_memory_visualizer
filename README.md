@@ -13,7 +13,7 @@ Local-first web app for ingesting LLM conversation exports, normalizing into a c
 
 ## Repo Layout
 - `src/detection`: source format detection
-- `src/parsers`: source-specific parsers (ChatGPT full, Claude/Gemini stubs)
+- `src/parsers`: source-specific parsers (ChatGPT + Claude, Gemini stub)
 - `src/normalize`: canonical normalizer
 - `src/storage`: SQLite repository + migrations
 - `src/redaction`: PII redaction layer
@@ -74,6 +74,8 @@ npm run dev
 - Import:
 ```bash
 python3 -m src.cli import fixtures/chatgpt_export_sample.json
+python3 -m src.cli import /path/to/claude-export.json
+python3 -m src.cli import /path/to/claude-export.zip
 ```
 - Embed:
 ```bash
@@ -107,4 +109,6 @@ python3 -m src.cli cluster --k 4
 python3 -m pytest -q
 ```
 
-Current environment note: `pytest` is not installed in this container, so tests were added but not executed here.
+## Claude Export
+- In Claude, request export via `Settings -> Privacy -> Export data`.
+- Import the resulting Claude JSON, ZIP, or an extracted export directory with the same `import` CLI/API flow.

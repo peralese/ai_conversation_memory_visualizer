@@ -1,0 +1,29 @@
+{
+  "conversations": [
+    {
+      "uuid": "claude_bulk_1",
+      "name": "Bulk Export Conversation",
+      "createdAt": "2025-02-01T08:00:00Z",
+      "updatedAt": "2025-02-01T08:03:00Z",
+      "chat_messages": [
+        {
+          "uuid": "bulk_msg_1",
+          "speaker": "user",
+          "timestamp": "2025-02-01T08:00:02Z",
+          "text": "Draft a launch checklist."
+        },
+        {
+          "uuid": "bulk_msg_2",
+          "speaker": "claude",
+          "timestamp": "2025-02-01T08:00:30Z",
+          "message": {
+            "parts": [
+              "Define goals",
+              "Create timeline"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
