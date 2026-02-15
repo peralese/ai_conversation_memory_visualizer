@@ -6,6 +6,7 @@ from typing import Any
 
 from src.clustering.service import ClusteringService
 from src.metrics.drift_service import DriftService
+from src.metrics.modes_service import ModesService
 from src.metrics.service import MetricsService
 from src.metrics.specialization_service import ModelSpecializationService
 from src.storage.repository import SQLiteRepository
@@ -18,6 +19,7 @@ class CognitiveSummaryReportGenerator:
         self.metrics = MetricsService(repo)
         self.specialization = ModelSpecializationService(repo)
         self.drift = DriftService(repo)
+        self.modes = ModesService(repo)
 
     def generate_json_report(self) -> dict[str, Any]:
         counts = self.repo.dataset_counts()
@@ -86,6 +88,9 @@ class CognitiveSummaryReportGenerator:
         drift_insights = _drift_insights(drift_summary)
         half_life_insights = _half_life_insights(half_life)
         timeline_summary = _timeline_summary(self.repo.topic_events())
+        modes_metrics = self.modes.metrics(level="cluster")
+        modes_by_source = self.modes.by_source(level="cluster")
+        top_by_mode = _top_clusters_by_mode(modes_metrics.get("per_entity_mode_weights", []))
 
         return {
             "report_version": "1.0",
@@ -100,6 +105,9 @@ class CognitiveSummaryReportGenerator:
             "top_cognitive_modes": cluster_modes,
             "model_specialization_highlights": specialization_highlights,
             "model_specialization_notes": specialization_notes,
+            "overall_mode_distribution": modes_metrics.get("overall_mode_distribution", {}),
+            "top_clusters_by_dominant_mode": top_by_mode,
+            "mode_distribution_by_source": modes_by_source,
             "drift_insights": drift_insights,
             "half_life_insights": half_life_insights,
             "timeline_summary": timeline_summary,
@@ -144,6 +152,30 @@ class CognitiveSummaryReportGenerator:
                 lines.append(
                     f"  - #{row['cluster_id']} {row['label']} (lift {row['lift']}, share {row['share_pct']}%)"
                 )
+        lines.append("")
+
+        lines.append("## Cognitive Mode Fingerprint")
+        for mode_id, weight in report.get("overall_mode_distribution", {}).items():
+            lines.append(f"- {mode_id}: {round(float(weight) * 100.0, 2)}%")
+        lines.append("")
+
+        lines.append("## Top Clusters by Dominant Mode")
+        for mode_id, rows in report.get("top_clusters_by_dominant_mode", {}).items():
+            lines.append(f"- **{mode_id}**")
+            for row in rows:
+                lines.append(f"  - #{row['entity_id']} {row['label']} (weight {row['dominant_weight']})")
+        lines.append("")
+
+        lines.append("## Mode Distribution by Source")
+        by_source = report.get("mode_distribution_by_source", {})
+        for source, available in by_source.get("baseline_available", {}).items():
+            if not available:
+                lines.append(f"- {source}: N/A (no baseline data)")
+                continue
+            dist = (by_source.get("mode_distribution_by_source") or {}).get(source) or {}
+            lines.append(f"- {source}:")
+            for mode_id, val in dist.items():
+                lines.append(f"  - {mode_id}: {round(float(val) * 100.0, 2)}%")
         lines.append("")
 
         lines.append("## 4) Evolving vs Stable Topics (Drift)")
@@ -288,3 +320,15 @@ def _timeline_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         "most_active_months": most_active_months,
         "seasonality_note": note,
     }
+
+
+def _top_clusters_by_mode(rows: list[dict[str, Any]], top_n: int = 5) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        mode = row.get("dominant_mode")
+        if mode:
+            grouped[str(mode)].append(row)
+    out = {}
+    for mode, items in grouped.items():
+        out[mode] = sorted(items, key=lambda r: float(r.get("dominant_weight") or 0.0), reverse=True)[:top_n]
+    return out

@@ -10,6 +10,7 @@ from fastapi.responses import PlainTextResponse
 from src.clustering.service import ClusteringService
 from src.embeddings.service import EmbeddingService
 from src.metrics.drift_service import DriftService
+from src.metrics.modes_service import ModesService
 from src.metrics.service import MetricsService
 from src.metrics.specialization_service import ModelSpecializationService
 from src.pipeline import import_file
@@ -33,6 +34,7 @@ metrics_service = MetricsService(repo)
 specialization_service = ModelSpecializationService(repo)
 drift_service = DriftService(repo)
 report_generator = CognitiveSummaryReportGenerator(repo)
+modes_service = ModesService(repo)
 
 
 @app.get("/health")
@@ -187,6 +189,21 @@ def model_specialization(level: str = "cluster") -> dict:
 @app.get("/metrics/drift")
 def drift(level: str = "cluster", cluster_id: str | None = None) -> dict:
     return drift_service.detail(level=level, cluster_id=cluster_id)
+
+
+@app.get("/metrics/modes")
+def modes(level: str = "cluster") -> dict:
+    return modes_service.metrics(level=level)
+
+
+@app.get("/metrics/modes/timeline")
+def modes_timeline(level: str = "cluster", bucket: str = "week") -> dict:
+    return modes_service.timeline(level=level, bucket=bucket)
+
+
+@app.get("/metrics/modes/by_source")
+def modes_by_source(level: str = "cluster") -> dict:
+    return modes_service.by_source(level=level)
 
 
 @app.get("/reports/cognitive_summary")

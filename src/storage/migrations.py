@@ -115,6 +115,24 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_centroids_time_level_bucket ON cluster_centroids_time(level, bucket_start_date);
         """,
     )
+    ,
+    (
+        4,
+        """
+        CREATE TABLE IF NOT EXISTS mode_scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            level TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            mode_weights_json TEXT NOT NULL,
+            dominant_mode TEXT,
+            dominant_weight REAL,
+            created_at TEXT NOT NULL,
+            UNIQUE(level, entity_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mode_scores_level ON mode_scores(level);
+        """,
+    )
 ]
 
 

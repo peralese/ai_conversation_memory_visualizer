@@ -6,6 +6,7 @@ export default function ClusterExplorerPage() {
   const [clusters, setClusters] = useState([])
   const [expanded, setExpanded] = useState({})
   const [specialization, setSpecialization] = useState({})
+  const [modes, setModes] = useState({})
 
   useEffect(() => {
     apiGet('/clusters?include_subclusters=true&exclude_domain_stopwords=true').then(setClusters)
@@ -26,6 +27,14 @@ export default function ClusterExplorerPage() {
       })
       setSpecialization(byCluster)
     })
+    apiGet('/metrics/modes?level=cluster').then(res => {
+      const byCluster = {}
+      ;(res.per_entity_mode_weights || []).forEach(item => {
+        const id = Number(item.entity_id)
+        byCluster[id] = `${item.dominant_mode} ${Number(item.dominant_weight || 0).toFixed(2)}`
+      })
+      setModes(byCluster)
+    })
   }, [])
 
   function toggle(clusterId) {
@@ -43,6 +52,7 @@ export default function ClusterExplorerPage() {
                 #{c.cluster_id} {c.label} ({c.message_count} messages) [Claude {c.source_breakdown?.counts?.CLAUDE ?? 0} | Gemini {c.source_breakdown?.counts?.GEMINI ?? 0} | ChatGPT {c.source_breakdown?.counts?.CHATGPT ?? 0}]
               </Link>
               <span className="badge">{specialization[c.cluster_id] || ''}</span>
+              <span className="badge">{modes[c.cluster_id] || ''}</span>
               {Array.isArray(c.subclusters) && c.subclusters.length > 0 && (
                 <button type="button" onClick={() => toggle(c.cluster_id)}>
                   {expanded[c.cluster_id] ? 'Hide subclusters' : 'Show subclusters'}

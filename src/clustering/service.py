@@ -8,6 +8,7 @@ from typing import Any
 
 from src.analysis.domain import DOMAIN_STOPWORDS
 from src.analysis.text import build_analysis_text
+from src.metrics.modes_service import ModesService
 from src.models import Cluster
 from src.storage.repository import SQLiteRepository
 
@@ -73,6 +74,8 @@ class ClusteringService:
         _apply_unique_cluster_labels(clusters, label_terms_by_cluster)
         self.repo.replace_clusters(clusters, memberships, topic_events)
         self.repo.clear_all_subclusters()
+        ModesService(self.repo).compute_and_persist(level="cluster")
+        self.repo.replace_mode_scores("subcluster", [])
         return {"clusters": len(clusters), "members": len(memberships)}
 
     def list_clusters(self, *, exclude_domain_stopwords: bool = True, include_subclusters: bool = False) -> list[dict[str, Any]]:
@@ -337,8 +340,10 @@ class ClusteringService:
 
         if not insert_rows:
             self.repo.clear_subclusters_for_parent(parent_cluster_id)
+            ModesService(self.repo).compute_and_persist(level="subcluster")
             return
         self.repo.replace_subclusters_for_parent(parent_cluster_id, insert_rows)
+        ModesService(self.repo).compute_and_persist(level="subcluster")
 
     def _should_subcluster(self, parent_cluster_id: int) -> bool:
         stats = self.repo.cluster_context_stats(parent_cluster_id)

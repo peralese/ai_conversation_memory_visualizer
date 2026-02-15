@@ -740,6 +740,94 @@ class SQLiteRepository:
                 return True
             return False
 
+    def replace_mode_scores(self, level: str, rows: list[dict[str, Any]]) -> None:
+        with self.connection() as conn:
+            conn.execute("DELETE FROM mode_scores WHERE level = ?", (level,))
+            conn.executemany(
+                """
+                INSERT INTO mode_scores(level, entity_id, mode_weights_json, dominant_mode, dominant_weight, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        level,
+                        str(r["entity_id"]),
+                        json.dumps(r["mode_weights"]),
+                        r.get("dominant_mode"),
+                        r.get("dominant_weight"),
+                        str(r["created_at"]),
+                    )
+                    for r in rows
+                ],
+            )
+
+    def mode_scores(self, level: str) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT level, entity_id, mode_weights_json, dominant_mode, dominant_weight, created_at
+                FROM mode_scores
+                WHERE level = ?
+                """,
+                (level,),
+            ).fetchall()
+            return [
+                {
+                    "level": str(r["level"]),
+                    "entity_id": str(r["entity_id"]),
+                    "mode_weights": json.loads(r["mode_weights_json"]),
+                    "dominant_mode": r["dominant_mode"],
+                    "dominant_weight": float(r["dominant_weight"]) if r["dominant_weight"] is not None else None,
+                    "created_at": str(r["created_at"]),
+                }
+                for r in rows
+            ]
+
+    def mode_scores_stale(self, level: str) -> bool:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT MAX(created_at) AS latest_mode_at, COUNT(*) AS count_rows FROM mode_scores WHERE level = ?",
+                (level,),
+            ).fetchone()
+            if row is None or int(row["count_rows"] or 0) == 0:
+                return True
+            latest_mode_at = str(row["latest_mode_at"] or "")
+
+            if level == "subcluster":
+                latest_entity_at = conn.execute("SELECT MAX(created_at) FROM subclusters").fetchone()[0]
+            else:
+                latest_entity_at = conn.execute("SELECT MAX(created_at) FROM clusters").fetchone()[0]
+            latest_entity_at = str(latest_entity_at or "")
+            if latest_entity_at and latest_entity_at > latest_mode_at:
+                return True
+            return False
+
+    def mode_timeline_points(self, level: str) -> list[dict[str, Any]]:
+        if level == "subcluster":
+            sql = """
+                SELECT sm.subcluster_id AS entity_id, m.timestamp, c.source
+                FROM subcluster_membership sm
+                JOIN messages m ON m.id = sm.message_id
+                JOIN conversations c ON c.id = m.conversation_id
+            """
+        else:
+            sql = """
+                SELECT cm.cluster_id AS entity_id, m.timestamp, c.source
+                FROM cluster_membership cm
+                JOIN messages m ON m.id = cm.message_id
+                JOIN conversations c ON c.id = m.conversation_id
+            """
+        with self.connection() as conn:
+            rows = conn.execute(sql).fetchall()
+            return [
+                {
+                    "entity_id": str(r["entity_id"]),
+                    "timestamp": str(r["timestamp"]),
+                    "source": str(r["source"]),
+                }
+                for r in rows
+            ]
+
     def cluster_keywords_corpus(self, cluster_id: int) -> list[str]:
         with self.connection() as conn:
             rows = conn.execute(

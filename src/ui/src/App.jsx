@@ -7,6 +7,7 @@ import ClusterDetailPage from './pages/ClusterDetailPage'
 import ModelSpecializationPage from './pages/ModelSpecializationPage'
 import DriftPage from './pages/DriftPage'
 import ReportPage from './pages/ReportPage'
+import CognitiveModesPage from './pages/CognitiveModesPage'
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
           <NavLink to="/timeline">Timeline</NavLink>
           <NavLink to="/specialization">Specialization</NavLink>
           <NavLink to="/drift">Drift</NavLink>
+          <NavLink to="/modes">Cognitive Modes</NavLink>
           <NavLink to="/report">Report</NavLink>
         </nav>
       </aside>
@@ -32,6 +34,7 @@ export default function App() {
           <Route path="/clusters/:clusterId" element={<ClusterDetailPage />} />
           <Route path="/specialization" element={<ModelSpecializationPage />} />
           <Route path="/drift" element={<DriftPage />} />
+          <Route path="/modes" element={<CognitiveModesPage />} />
           <Route path="/report" element={<ReportPage />} />
         </Routes>
       </main>

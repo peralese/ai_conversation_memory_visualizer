@@ -7,6 +7,7 @@ from pathlib import Path
 from src.clustering.service import ClusteringService
 from src.embeddings.service import EmbeddingService
 from src.metrics.drift_service import DriftService
+from src.metrics.modes_service import ModesService
 from src.metrics.service import MetricsService
 from src.pipeline import import_file
 from src.reports.generator import CognitiveSummaryReportGenerator
@@ -36,6 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_report = sub.add_parser("report", help="Generate cognitive summary report")
     p_report.add_argument("--format", choices=["json", "md"], default="md")
     p_report.add_argument("--out", default=None)
+
+    p_modes = sub.add_parser("modes", help="Compute and persist mode scores")
+    p_modes.add_argument("--level", choices=["cluster", "subcluster"], default="cluster")
 
     return parser
 
@@ -88,6 +92,11 @@ def main() -> None:
             print({"written": str(out_path), "format": args.format})
         else:
             print(content)
+        return
+
+    if args.command == "modes":
+        service = ModesService(repo)
+        print(service.compute_and_persist(level=args.level))
         return
 
 
