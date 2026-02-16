@@ -6,8 +6,9 @@ from math import sqrt
 import random
 from typing import Any
 
-from src.analysis.domain import DOMAIN_STOPWORDS
 from src.analysis.text import build_analysis_text
+from src.clustering.keywords import build_distinctive_labels
+from src.clustering.semantic_labels import build_semantic_labels
 from src.metrics.modes_service import ModesService
 from src.models import Cluster
 from src.storage.repository import SQLiteRepository
@@ -20,6 +21,10 @@ SUBCLUSTER_MIN_SIZE = 3
 class ClusteringService:
     def __init__(self, repo: SQLiteRepository):
         self.repo = repo
+
+    def ensure_clusters_fresh(self) -> None:
+        if self.repo.clusters_stale():
+            self.cluster_embeddings(k=None)
 
     def cluster_embeddings(self, k: int | None = None) -> dict[str, int]:
         rows = self.repo.load_embeddings()
@@ -49,11 +54,11 @@ class ClusteringService:
         clusters: list[Cluster] = []
         memberships: list[tuple[int, str]] = []
         topic_events: list[tuple[int, str, str, str]] = []
-        label_terms_by_cluster: dict[int, list[str]] = {}
+        texts_by_cluster: dict[int, list[str]] = {}
 
         for label, members in grouped.items():
             texts = [str(m.get("analysis_text") or build_analysis_text(str(m["original_text"]))) for m in members]
-            label_terms_by_cluster[label] = _top_keywords_terms(texts, exclude_domain_stopwords=True)
+            texts_by_cluster[label] = texts
             member_ids = [m["item_id"] for m in members]
             centroid = centroids[label] if label < len(centroids) else None
 
@@ -71,26 +76,63 @@ class ClusteringService:
                 memberships.append((label, member["item_id"]))
                 topic_events.append((label, member["timestamp"], member["conversation_id"], member["item_id"]))
 
-        _apply_unique_cluster_labels(clusters, label_terms_by_cluster)
+        label_artifacts = build_distinctive_labels(texts_by_cluster, top_n=8, exclude_domain_stopwords=True)
+        _apply_unique_cluster_labels(clusters, {cid: info.label for cid, info in label_artifacts.items()})
         self.repo.replace_clusters(clusters, memberships, topic_events)
         self.repo.clear_all_subclusters()
         ModesService(self.repo).compute_and_persist(level="cluster")
         self.repo.replace_mode_scores("subcluster", [])
         return {"clusters": len(clusters), "members": len(memberships)}
 
-    def list_clusters(self, *, exclude_domain_stopwords: bool = True, include_subclusters: bool = False) -> list[dict[str, Any]]:
+    def list_clusters(
+        self,
+        *,
+        exclude_domain_stopwords: bool = True,
+        include_subclusters: bool = False,
+        use_semantic_labels: bool = True,
+        show_legacy_labels: bool = False,
+    ) -> list[dict[str, Any]]:
+        self.ensure_clusters_fresh()
         clusters = self.repo.list_clusters()
         records_by_cluster = self._records_by_cluster()
+        texts_by_cluster = {
+            int(cluster["cluster_id"]): [r["analysis_text"] for r in records_by_cluster.get(int(cluster["cluster_id"]), [])]
+            for cluster in clusters
+        }
+        label_artifacts = build_distinctive_labels(
+            texts_by_cluster,
+            top_n=8,
+            exclude_domain_stopwords=exclude_domain_stopwords,
+        )
+        semantic_labels = build_semantic_labels(
+            records_by_cluster,
+            exclude_domain_stopwords=exclude_domain_stopwords,
+        )
 
         for cluster in clusters:
             cid = int(cluster["cluster_id"])
             records = records_by_cluster.get(cid, [])
-            terms = _top_keywords_terms(
-                [r["analysis_text"] for r in records],
-                exclude_domain_stopwords=exclude_domain_stopwords,
+            info = label_artifacts.get(cid)
+            legacy_label = info.label if info else str(cluster.get("label") or "Unlabeled topic")
+            semantic = semantic_labels.get(cid)
+            semantic_payload = {
+                "title": semantic.title if semantic else legacy_label,
+                "subtitle": semantic.subtitle if semantic else "",
+                "summary": semantic.summary if semantic else "",
+            }
+            if info:
+                cluster["label"] = legacy_label
+                cluster["top_keywords"] = info.terms
+                cluster["label_low_signal"] = info.low_signal
+                cluster["label_warning"] = info.warning
+            cluster["legacy_label"] = legacy_label
+            cluster["semantic"] = semantic_payload
+            cluster["label"] = _display_label(
+                legacy_label,
+                semantic_payload.get("title", ""),
+                use_semantic_labels=use_semantic_labels,
+                show_legacy_labels=show_legacy_labels,
             )
-            if terms:
-                cluster["label"] = ", ".join(terms[:3])
             cluster["source_breakdown"] = _source_breakdown(records)
             stats = self.repo.cluster_context_stats(cid)
             cluster["dataset_percentage"] = stats["dataset_percentage"]
@@ -103,7 +145,10 @@ class ClusteringService:
             for cluster in clusters:
                 cid = int(cluster["cluster_id"])
                 cluster["subclusters"] = self._get_subclusters_for_parent(
-                    cid, exclude_domain_stopwords=exclude_domain_stopwords
+                    cid,
+                    exclude_domain_stopwords=exclude_domain_stopwords,
+                    use_semantic_labels=use_semantic_labels,
+                    show_legacy_labels=show_legacy_labels,
                 )
         return clusters
 
@@ -113,15 +158,40 @@ class ClusteringService:
         *,
         exclude_domain_stopwords: bool = True,
         include_subclusters: bool = True,
+        use_semantic_labels: bool = True,
+        show_legacy_labels: bool = False,
     ) -> dict[str, Any]:
+        self.ensure_clusters_fresh()
         cluster = self.repo.get_cluster_row(cluster_id)
 
-        records = self.repo.cluster_member_records(cluster_id)
-        top_keywords = _top_keywords_terms(
-            [r["analysis_text"] for r in records], top_n=8, exclude_domain_stopwords=exclude_domain_stopwords
+        records_by_cluster = self._records_by_cluster()
+        texts_by_cluster = {cid: [r["analysis_text"] for r in rows] for cid, rows in records_by_cluster.items()}
+        label_artifacts = build_distinctive_labels(
+            texts_by_cluster,
+            top_n=8,
+            exclude_domain_stopwords=exclude_domain_stopwords,
+            include_debug_for={int(cluster_id)},
         )
-        if top_keywords:
-            cluster["label"] = ", ".join(top_keywords[:3])
+        semantic_labels = build_semantic_labels(
+            records_by_cluster,
+            exclude_domain_stopwords=exclude_domain_stopwords,
+        )
+        info = label_artifacts.get(int(cluster_id))
+        semantic = semantic_labels.get(int(cluster_id))
+        records = records_by_cluster.get(int(cluster_id), [])
+        top_keywords = info.terms if info else []
+        legacy_label = info.label if info else str(cluster.get("label") or "Unlabeled topic")
+        semantic_payload = {
+            "title": semantic.title if semantic else legacy_label,
+            "subtitle": semantic.subtitle if semantic else "",
+            "summary": semantic.summary if semantic else "",
+        }
+        cluster["label"] = _display_label(
+            legacy_label,
+            semantic_payload["title"],
+            use_semantic_labels=use_semantic_labels,
+            show_legacy_labels=show_legacy_labels,
+        )
         samples = _select_representative_samples(records, cluster.get("centroid"), cluster_id, limit=10)
         source_breakdown = _source_breakdown(records)
         stats = self.repo.cluster_context_stats(cluster_id)
@@ -129,6 +199,10 @@ class ClusteringService:
         payload = {
             "cluster_id": int(cluster["cluster_id"]),
             "label": cluster["label"],
+            "legacy_label": legacy_label,
+            "semantic": semantic_payload,
+            "label_low_signal": bool(info.low_signal) if info else True,
+            "label_warning": info.warning if info else "Label may be low-signal; consider adding domain stopwords.",
             "message_count": stats["message_count"],
             "conversations_count": stats["conversations_count"],
             "dataset_percentage": stats["dataset_percentage"],
@@ -138,11 +212,19 @@ class ClusteringService:
             "last_seen": cluster["last_seen"],
             "sample_messages": samples,
             "source_breakdown": source_breakdown,
+            "label_debug": (
+                info.debug
+                if info and info.debug is not None
+                else {"raw_top_tokens": [], "removed_by_rule": {}, "final_top_tokens": [], "final_label_tokens": []}
+            ),
         }
 
         if include_subclusters:
             payload["subclusters"] = self._get_subclusters_for_parent(
-                int(cluster_id), exclude_domain_stopwords=exclude_domain_stopwords
+                int(cluster_id),
+                exclude_domain_stopwords=exclude_domain_stopwords,
+                use_semantic_labels=use_semantic_labels,
+                show_legacy_labels=show_legacy_labels,
             )
         return payload
 
@@ -151,14 +233,25 @@ class ClusteringService:
         cluster_id: int,
         *,
         exclude_domain_stopwords: bool = True,
+        use_semantic_labels: bool = True,
+        show_legacy_labels: bool = False,
     ) -> dict[str, Any]:
-        cluster = self.repo.get_cluster_row(cluster_id)
+        cluster = self.cluster_detail(
+            cluster_id,
+            exclude_domain_stopwords=exclude_domain_stopwords,
+            include_subclusters=False,
+            use_semantic_labels=use_semantic_labels,
+            show_legacy_labels=show_legacy_labels,
+        )
         return {
             "cluster_id": int(cluster_id),
             "label": str(cluster["label"]),
             "message_count": int(cluster["message_count"]),
             "subclusters": self._get_subclusters_for_parent(
-                int(cluster_id), exclude_domain_stopwords=exclude_domain_stopwords
+                int(cluster_id),
+                exclude_domain_stopwords=exclude_domain_stopwords,
+                use_semantic_labels=use_semantic_labels,
+                show_legacy_labels=show_legacy_labels,
             ),
         }
 
@@ -169,11 +262,16 @@ class ClusteringService:
         min_messages: int = 1,
         top_n: int = 15,
         exclude_domain_stopwords: bool = True,
+        use_semantic_labels: bool = True,
+        show_legacy_labels: bool = False,
     ) -> list[dict[str, Any]]:
+        self.ensure_clusters_fresh()
         subclusters = {
             int(c["cluster_id"]): self._get_subclusters_for_parent(
                 int(c["cluster_id"]),
                 exclude_domain_stopwords=exclude_domain_stopwords,
+                use_semantic_labels=use_semantic_labels,
+                show_legacy_labels=show_legacy_labels,
             )
             for c in self.repo.list_clusters()
         }
@@ -186,7 +284,12 @@ class ClusteringService:
                     message_to_entity[str(msg_id)] = (entity_id, label, parent_id)
 
         cluster_labels = {
-            int(c["cluster_id"]): str(c["label"]) for c in self.list_clusters(exclude_domain_stopwords=exclude_domain_stopwords)
+            int(c["cluster_id"]): str(c["label"])
+            for c in self.list_clusters(
+                exclude_domain_stopwords=exclude_domain_stopwords,
+                use_semantic_labels=use_semantic_labels,
+                show_legacy_labels=show_legacy_labels,
+            )
         }
 
         rollup: dict[tuple[str, str], int] = defaultdict(int)
@@ -242,6 +345,8 @@ class ClusteringService:
         parent_cluster_id: int,
         *,
         exclude_domain_stopwords: bool = True,
+        use_semantic_labels: bool = True,
+        show_legacy_labels: bool = False,
     ) -> list[dict[str, Any]]:
         self._ensure_subclusters(parent_cluster_id, exclude_domain_stopwords=exclude_domain_stopwords)
         rows = self.repo.list_subclusters(parent_cluster_id)
@@ -249,19 +354,58 @@ class ClusteringService:
         parent_count = max(1, int(parent_stats["message_count"]))
 
         out = []
+        texts_by_subcluster: dict[int, list[str]] = {}
+        members_by_subcluster: dict[int, list[dict[str, Any]]] = {}
         for row in rows:
             sid = int(row["id"])
-            samples = self.repo.subcluster_member_records(sid, limit=3)
+            members = self.repo.subcluster_member_records(sid)
+            members_by_subcluster[sid] = members
+            texts_by_subcluster[sid] = [
+                str(m.get("analysis_text") or build_analysis_text(str(m.get("original_text") or ""))) for m in members
+            ]
+        label_artifacts = build_distinctive_labels(
+            texts_by_subcluster,
+            top_n=8,
+            exclude_domain_stopwords=exclude_domain_stopwords,
+        )
+        semantic_labels = build_semantic_labels(
+            members_by_subcluster,
+            exclude_domain_stopwords=exclude_domain_stopwords,
+        )
+
+        for row in rows:
+            sid = int(row["id"])
+            members = members_by_subcluster.get(sid, [])
+            samples = members[:3]
+            info = label_artifacts.get(sid)
+            legacy_label = info.label if info else str(row["label"])
+            semantic = semantic_labels.get(sid)
+            semantic_payload = {
+                "title": semantic.title if semantic else legacy_label,
+                "subtitle": semantic.subtitle if semantic else "",
+                "summary": semantic.summary if semantic else "",
+            }
             out.append(
                 {
                     "id": sid,
                     "parent_cluster_id": int(row["parent_cluster_id"]),
-                    "label": str(row["label"]),
+                    "label": _display_label(
+                        legacy_label,
+                        semantic_payload.get("title", ""),
+                        use_semantic_labels=use_semantic_labels,
+                        show_legacy_labels=show_legacy_labels,
+                    ),
+                    "legacy_label": legacy_label,
+                    "semantic": semantic_payload,
+                    "label_low_signal": bool(info.low_signal) if info else True,
+                    "label_warning": info.warning if info else "Label may be low-signal; consider adding domain stopwords.",
+                    "top_keywords": info.terms if info else [],
                     "message_count": int(row["message_count"] or 0),
                     "conversations_count": int(row["conversations_count"] or 0),
                     "dataset_percentage": round((int(row["message_count"] or 0) / parent_count) * 100.0, 2),
                     "first_seen": row["first_seen"],
                     "last_seen": row["last_seen"],
+                    "message_ids": [str(m["id"]) for m in members],
                     "sample_messages": [
                         {
                             "message_id": str(m["id"]),
@@ -314,15 +458,23 @@ class ClusteringService:
             grouped[int(label)].append(record)
 
         insert_rows: list[dict[str, Any]] = []
+        texts_by_subcluster: dict[int, list[str]] = {}
+        members_by_subcluster: dict[int, list[dict[str, Any]]] = {}
         for sub_label, members in sorted(grouped.items(), key=lambda kv: len(kv[1]), reverse=True):
             if len(members) < SUBCLUSTER_MIN_SIZE:
                 continue
-            terms = _top_keywords_terms(
-                [str(m["analysis_text"]) for m in members],
-                top_n=6,
-                exclude_domain_stopwords=exclude_domain_stopwords,
-            )
-            label = ", ".join(terms[:3]) if terms else f"Subtopic {sub_label}"
+            sid = int(sub_label)
+            members_by_subcluster[sid] = members
+            texts_by_subcluster[sid] = [str(m["analysis_text"]) for m in members]
+        label_artifacts = build_distinctive_labels(
+            texts_by_subcluster,
+            top_n=6,
+            exclude_domain_stopwords=exclude_domain_stopwords,
+        )
+
+        for sub_label, members in sorted(members_by_subcluster.items(), key=lambda kv: len(kv[1]), reverse=True):
+            info = label_artifacts.get(sub_label)
+            label = info.label if info else f"Subtopic {sub_label}"
             insert_rows.append(
                 {
                     "label": label,
@@ -353,61 +505,12 @@ class ClusteringService:
         )
 
 
-def _top_keywords_terms(
-    texts: list[str], top_n: int = 6, *, exclude_domain_stopwords: bool = True
-) -> list[str]:
-    if not any(t.strip() for t in texts):
-        return []
-
-    try:
-        from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, TfidfVectorizer  # type: ignore
-        import numpy as np  # type: ignore
-
-        stopwords = set(ENGLISH_STOP_WORDS).union(
-            {"prompted", "please", "help", "generate", "create", "rewrite", "draft"}
-        )
-        if exclude_domain_stopwords:
-            stopwords = stopwords.union(set(DOMAIN_STOPWORDS))
-        vec = TfidfVectorizer(stop_words=list(stopwords), max_features=2000, ngram_range=(1, 2))
-        matrix = vec.fit_transform(texts)
-        scores = np.asarray(matrix.mean(axis=0)).ravel()
-        if scores.size == 0:
-            return []
-
-        terms = np.array(vec.get_feature_names_out())
-        idx = np.argsort(scores)[-top_n:][::-1]
-        return [str(terms[i]) for i in idx if scores[i] > 0]
-    except Exception:
-        words = []
-        domain_set = set(DOMAIN_STOPWORDS) if exclude_domain_stopwords else set()
-        for text in texts:
-            for token in build_analysis_text(text).lower().split():
-                token = "".join(ch for ch in token if ch.isalnum())
-                if len(token) < 3 or token in domain_set:
-                    continue
-                words.append(token)
-        if not words:
-            return []
-        counts: dict[str, int] = defaultdict(int)
-        for w in words:
-            counts[w] += 1
-        top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
-        return [w for w, _ in top]
-
-
-def _apply_unique_cluster_labels(clusters: list[Cluster], terms_by_cluster: dict[int, list[str]]) -> None:
+def _apply_unique_cluster_labels(clusters: list[Cluster], labels_by_cluster: dict[int, str]) -> None:
     used: set[str] = set()
     for cluster in sorted(clusters, key=lambda c: c.cluster_id):
-        terms = terms_by_cluster.get(cluster.cluster_id, [])
-        base_label = ", ".join(terms[:3]) if terms else "Unlabeled topic"
+        base_label = labels_by_cluster.get(cluster.cluster_id, "Unlabeled topic")
 
         label = base_label
-        if label in used and terms:
-            for extra_idx in range(3, len(terms)):
-                candidate = ", ".join(terms[: extra_idx + 1])
-                if candidate not in used:
-                    label = candidate
-                    break
         if label in used:
             label = f"{base_label} (#{cluster.cluster_id})"
 
@@ -423,6 +526,22 @@ def _ensure_unique_labels_dicts(clusters: list[dict[str, Any]]) -> None:
             label = f"{label} (#{cluster['cluster_id']})"
             cluster["label"] = label
         used.add(label)
+
+
+def _display_label(
+    legacy_label: str,
+    semantic_title: str,
+    *,
+    use_semantic_labels: bool,
+    show_legacy_labels: bool,
+) -> str:
+    semantic_title = str(semantic_title or "").strip()
+    legacy_label = str(legacy_label or "Unlabeled topic").strip()
+    if use_semantic_labels and semantic_title:
+        if show_legacy_labels and semantic_title.lower() != legacy_label.lower():
+            return f"{semantic_title} (legacy: {legacy_label})"
+        return semantic_title
+    return legacy_label
 
 
 def _fallback_cluster(vectors: list[list[float]], k: int) -> tuple[list[int], list[list[float]]]:

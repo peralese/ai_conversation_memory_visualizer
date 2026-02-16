@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from src.clustering.service import ClusteringService
 from src.models import CanonicalConversationBundle, Conversation, Message, SourceType, SpeakerRole
+from src.models import Cluster
 from src.storage.repository import SQLiteRepository
 
 
@@ -188,3 +189,138 @@ def test_cluster_source_breakdown_counts(tmp_path):
     counts = detail["source_breakdown"]["counts"]
     assert set(counts.keys()) == {"CHATGPT", "CLAUDE", "GEMINI"}
     assert sum(counts.values()) == detail["message_count"]
+
+
+def test_cluster_list_exposes_semantic_and_legacy_labels(tmp_path):
+    db = tmp_path / "semantic.db"
+    repo = SQLiteRepository(str(db))
+
+    repo.upsert_bundle(_bundle("c1", 1, "id data file path azure monthly pricing script costs"))
+    repo.upsert_bundle(_bundle("c2", 2, "id data file path recipe eleventy print layout css"))
+    repo.save_embedding("m_1", [0.0, 0.1, 0.0, 0.1], "stub")
+    repo.save_embedding("m_2", [1.0, 0.9, 1.0, 0.9], "stub")
+
+    service = ClusteringService(repo)
+    service.cluster_embeddings(k=2)
+    clusters = service.list_clusters(use_semantic_labels=True, show_legacy_labels=False)
+    assert clusters
+    for row in clusters:
+        assert "legacy_label" in row
+        assert "semantic" in row
+        assert row["semantic"]["title"]
+        assert row["label"] == row["semantic"]["title"]
+
+
+def test_cluster_list_auto_rebuilds_stale_membership_rows(tmp_path):
+    db = tmp_path / "stale_guard.db"
+    repo = SQLiteRepository(str(db))
+    now = datetime.now(timezone.utc)
+
+    bundles = [
+        CanonicalConversationBundle(
+            conversation=Conversation(
+                id="c_chatgpt",
+                source=SourceType.CHATGPT,
+                title="cgpt",
+                created_at=now,
+                updated_at=now,
+                participants=["user", "assistant"],
+                tags=[],
+                raw_metadata={},
+            ),
+            messages=[
+                Message(
+                    id="m_chatgpt",
+                    conversation_id="c_chatgpt",
+                    timestamp=now.isoformat(),
+                    speaker_role=SpeakerRole.USER,
+                    text="azure pricing script monthly total costs",
+                    parent_message_id=None,
+                    token_count=None,
+                    raw_metadata={},
+                )
+            ],
+        ),
+        CanonicalConversationBundle(
+            conversation=Conversation(
+                id="c_claude",
+                source=SourceType.CLAUDE,
+                title="claude",
+                created_at=now,
+                updated_at=now,
+                participants=["user", "assistant"],
+                tags=[],
+                raw_metadata={},
+            ),
+            messages=[
+                Message(
+                    id="m_claude",
+                    conversation_id="c_claude",
+                    timestamp=now.isoformat(),
+                    speaker_role=SpeakerRole.USER,
+                    text="eleventy print layout css front matter",
+                    parent_message_id=None,
+                    token_count=None,
+                    raw_metadata={},
+                )
+            ],
+        ),
+        CanonicalConversationBundle(
+            conversation=Conversation(
+                id="c_gemini",
+                source=SourceType.GEMINI,
+                title="gemini",
+                created_at=now,
+                updated_at=now,
+                participants=["user", "assistant"],
+                tags=[],
+                raw_metadata={},
+            ),
+            messages=[
+                Message(
+                    id="m_gemini",
+                    conversation_id="c_gemini",
+                    timestamp=now.isoformat(),
+                    speaker_role=SpeakerRole.USER,
+                    text="terraform module policy deployment regions",
+                    parent_message_id=None,
+                    token_count=None,
+                    raw_metadata={},
+                )
+            ],
+        ),
+    ]
+    for bundle in bundles:
+        repo.upsert_bundle(bundle)
+
+    repo.save_embedding("m_chatgpt", [0.0, 0.1, 0.2, 0.3], "stub")
+    repo.save_embedding("m_claude", [0.1, 0.2, 0.3, 0.4], "stub")
+    repo.save_embedding("m_gemini", [0.2, 0.3, 0.4, 0.5], "stub")
+
+    # Seed an intentionally stale cluster set that excludes CHATGPT.
+    repo.replace_clusters(
+        [
+            Cluster(
+                cluster_id=0,
+                label="stale",
+                member_ids=["m_claude", "m_gemini"],
+                centroid=[0.0, 0.0, 0.0, 0.0],
+                created_at=now,
+            )
+        ],
+        memberships=[(0, "m_claude"), (0, "m_gemini")],
+        topic_events=[
+            (0, now.isoformat(), "c_claude", "m_claude"),
+            (0, now.isoformat(), "c_gemini", "m_gemini"),
+        ],
+    )
+
+    service = ClusteringService(repo)
+    clusters = service.list_clusters()
+    assert clusters
+
+    total_clustered = sum(int(c["message_count"]) for c in clusters)
+    assert total_clustered == 3
+
+    total_chatgpt = sum(int(c["source_breakdown"]["counts"]["CHATGPT"]) for c in clusters)
+    assert total_chatgpt == 1

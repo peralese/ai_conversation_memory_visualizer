@@ -7,9 +7,11 @@ export default function ClusterExplorerPage() {
   const [expanded, setExpanded] = useState({})
   const [specialization, setSpecialization] = useState({})
   const [modes, setModes] = useState({})
+  const [excludeDomainStopwords, setExcludeDomainStopwords] = useState(true)
+  const [useSemanticLabels, setUseSemanticLabels] = useState(true)
+  const [showLegacyLabels, setShowLegacyLabels] = useState(false)
 
   useEffect(() => {
-    apiGet('/clusters?include_subclusters=true&exclude_domain_stopwords=true').then(setClusters)
     apiGet('/metrics/model_specialization?level=cluster').then(res => {
       const byCluster = {}
       const baseline = res.baseline_available || {}
@@ -37,6 +39,16 @@ export default function ClusterExplorerPage() {
     })
   }, [])
 
+  useEffect(() => {
+    const qs = new URLSearchParams({
+      include_subclusters: 'true',
+      exclude_domain_stopwords: String(excludeDomainStopwords),
+      use_semantic_labels: String(useSemanticLabels),
+      show_legacy_labels: String(showLegacyLabels)
+    })
+    apiGet(`/clusters?${qs.toString()}`).then(setClusters)
+  }, [excludeDomainStopwords, useSemanticLabels, showLegacyLabels])
+
   function toggle(clusterId) {
     setExpanded(prev => ({ ...prev, [clusterId]: !prev[clusterId] }))
   }
@@ -44,6 +56,30 @@ export default function ClusterExplorerPage() {
   return (
     <section>
       <h2>Cluster Explorer</h2>
+      <label>
+        <input
+          type="checkbox"
+          checked={excludeDomainStopwords}
+          onChange={e => setExcludeDomainStopwords(e.target.checked)}
+        />
+        Exclude domain stopwords from labels
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={useSemanticLabels}
+          onChange={e => setUseSemanticLabels(e.target.checked)}
+        />
+        Use semantic labels
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={showLegacyLabels}
+          onChange={e => setShowLegacyLabels(e.target.checked)}
+        />
+        Show legacy labels
+      </label>
       <ul>
         {clusters.map(c => (
           <li key={c.cluster_id} title={c.preview_snippet || ''}>
@@ -51,6 +87,10 @@ export default function ClusterExplorerPage() {
               <Link to={`/clusters/${c.cluster_id}`}>
                 #{c.cluster_id} {c.label} ({c.message_count} messages) [Claude {c.source_breakdown?.counts?.CLAUDE ?? 0} | Gemini {c.source_breakdown?.counts?.GEMINI ?? 0} | ChatGPT {c.source_breakdown?.counts?.CHATGPT ?? 0}]
               </Link>
+              {showLegacyLabels && c.legacy_label && c.legacy_label !== c.label && (
+                <small style={{ opacity: 0.65 }}>legacy: {c.legacy_label}</small>
+              )}
+              {c.label_low_signal && <span title={c.label_warning || 'Label may be low-signal'}>⚠</span>}
               <span className="badge">{specialization[c.cluster_id] || ''}</span>
               <span className="badge">{modes[c.cluster_id] || ''}</span>
               {Array.isArray(c.subclusters) && c.subclusters.length > 0 && (

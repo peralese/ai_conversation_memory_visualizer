@@ -133,6 +133,75 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_mode_scores_level ON mode_scores(level);
         """,
     )
+    ,
+    (
+        5,
+        """
+        CREATE TABLE IF NOT EXISTS conversation_rollups (
+            conversation_id TEXT PRIMARY KEY,
+            source TEXT,
+            started_at TEXT,
+            ended_at TEXT,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            user_message_count INTEGER NOT NULL DEFAULT 0,
+            assistant_message_count INTEGER NOT NULL DEFAULT 0,
+            avg_message_length REAL NOT NULL DEFAULT 0,
+            top_terms_json TEXT NOT NULL DEFAULT '[]',
+            representative_snippets_json TEXT NOT NULL DEFAULT '[]',
+            rollup_text TEXT NOT NULL,
+            rollup_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS conversation_embeddings (
+            conversation_id TEXT PRIMARY KEY,
+            embedding_model TEXT NOT NULL,
+            embedding_json TEXT NOT NULL,
+            embedding_dim INTEGER NOT NULL,
+            rollup_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS conv_clusters (
+            conv_cluster_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            algo TEXT NOT NULL,
+            params_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS conv_cluster_members (
+            conv_cluster_id INTEGER NOT NULL,
+            conversation_id TEXT NOT NULL,
+            distance REAL,
+            is_representative INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (conv_cluster_id, conversation_id),
+            FOREIGN KEY (conv_cluster_id) REFERENCES conv_clusters(conv_cluster_id),
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS conv_cluster_labels (
+            conv_cluster_id INTEGER PRIMARY KEY,
+            label_source TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            tags_json TEXT NOT NULL,
+            evidence_hash TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            model TEXT NOT NULL,
+            tokens_in INTEGER,
+            tokens_out INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (conv_cluster_id) REFERENCES conv_clusters(conv_cluster_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_conv_rollups_updated_at ON conversation_rollups(updated_at);
+        CREATE INDEX IF NOT EXISTS idx_conv_embeddings_model ON conversation_embeddings(embedding_model);
+        CREATE INDEX IF NOT EXISTS idx_conv_cluster_members_cluster ON conv_cluster_members(conv_cluster_id);
+        CREATE INDEX IF NOT EXISTS idx_conv_cluster_members_conv ON conv_cluster_members(conversation_id);
+        """,
+    )
 ]
 
 

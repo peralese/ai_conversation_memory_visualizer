@@ -118,6 +118,291 @@ class SQLiteRepository:
                 )
             return out
 
+    def get_conversation_messages(self, conversation_id: str) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.id, m.conversation_id, m.timestamp, m.speaker_role, m.original_text, c.source, c.title AS conversation_title
+                FROM messages m
+                JOIN conversations c ON c.id = m.conversation_id
+                WHERE m.conversation_id = ?
+                ORDER BY m.timestamp ASC
+                """,
+                (conversation_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def all_conversation_messages(self) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.id, m.conversation_id, m.timestamp, m.speaker_role, m.original_text, c.source, c.title AS conversation_title
+                FROM messages m
+                JOIN conversations c ON c.id = m.conversation_id
+                ORDER BY m.conversation_id ASC, m.timestamp ASC
+                """
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_conversation_rollup(self, row: dict[str, Any]) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO conversation_rollups(
+                  conversation_id, source, started_at, ended_at, message_count, user_message_count, assistant_message_count,
+                  avg_message_length, top_terms_json, representative_snippets_json, rollup_text, rollup_hash, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                  source=excluded.source,
+                  started_at=excluded.started_at,
+                  ended_at=excluded.ended_at,
+                  message_count=excluded.message_count,
+                  user_message_count=excluded.user_message_count,
+                  assistant_message_count=excluded.assistant_message_count,
+                  avg_message_length=excluded.avg_message_length,
+                  top_terms_json=excluded.top_terms_json,
+                  representative_snippets_json=excluded.representative_snippets_json,
+                  rollup_text=excluded.rollup_text,
+                  rollup_hash=excluded.rollup_hash,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    str(row["conversation_id"]),
+                    row.get("source"),
+                    row.get("started_at"),
+                    row.get("ended_at"),
+                    int(row.get("message_count") or 0),
+                    int(row.get("user_message_count") or 0),
+                    int(row.get("assistant_message_count") or 0),
+                    float(row.get("avg_message_length") or 0.0),
+                    json.dumps(row.get("top_terms") or []),
+                    json.dumps(row.get("representative_snippets") or []),
+                    str(row.get("rollup_text") or ""),
+                    str(row.get("rollup_hash") or ""),
+                    str(row.get("updated_at") or datetime.now(timezone.utc).isoformat()),
+                ),
+            )
+
+    def get_conversation_rollup(self, conversation_id: str) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM conversation_rollups WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            out = dict(row)
+            out["top_terms"] = json.loads(str(out.pop("top_terms_json") or "[]"))
+            out["representative_snippets"] = json.loads(str(out.pop("representative_snippets_json") or "[]"))
+            return out
+
+    def list_conversation_rollups(self) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute("SELECT * FROM conversation_rollups ORDER BY updated_at DESC").fetchall()
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                item["top_terms"] = json.loads(str(item.pop("top_terms_json") or "[]"))
+                item["representative_snippets"] = json.loads(str(item.pop("representative_snippets_json") or "[]"))
+                out.append(item)
+            return out
+
+    def upsert_conversation_embedding(self, row: dict[str, Any]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO conversation_embeddings(
+                  conversation_id, embedding_model, embedding_json, embedding_dim, rollup_hash, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                  embedding_model=excluded.embedding_model,
+                  embedding_json=excluded.embedding_json,
+                  embedding_dim=excluded.embedding_dim,
+                  rollup_hash=excluded.rollup_hash,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    str(row["conversation_id"]),
+                    str(row["embedding_model"]),
+                    json.dumps(row.get("embedding") or []),
+                    int(row.get("embedding_dim") or 0),
+                    str(row.get("rollup_hash") or ""),
+                    str(row.get("created_at") or now),
+                    str(row.get("updated_at") or now),
+                ),
+            )
+
+    def get_conversation_embedding(self, conversation_id: str) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM conversation_embeddings WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            out = dict(row)
+            out["embedding"] = json.loads(str(out.pop("embedding_json") or "[]"))
+            return out
+
+    def list_conversation_embeddings(self) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute("SELECT * FROM conversation_embeddings").fetchall()
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                item["embedding"] = json.loads(str(item.pop("embedding_json") or "[]"))
+                out.append(item)
+            return out
+
+    def clear_conv_clusters(self) -> None:
+        with self.connection() as conn:
+            conn.execute("DELETE FROM conv_cluster_members")
+            conn.execute("DELETE FROM conv_cluster_labels")
+            conn.execute("DELETE FROM conv_clusters")
+
+    def create_conv_cluster_run(self, algo: str, params_json: str) -> int:
+        with self.connection() as conn:
+            cur = conn.execute(
+                "INSERT INTO conv_clusters(algo, params_json, created_at) VALUES (?, ?, ?)",
+                (algo, params_json, datetime.now(timezone.utc).isoformat()),
+            )
+            return int(cur.lastrowid)
+
+    def upsert_conv_cluster_members(self, conv_cluster_id: int, members: list[dict[str, Any]]) -> None:
+        with self.connection() as conn:
+            conn.execute("DELETE FROM conv_cluster_members WHERE conv_cluster_id = ?", (conv_cluster_id,))
+            conn.executemany(
+                """
+                INSERT INTO conv_cluster_members(conv_cluster_id, conversation_id, distance, is_representative)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(conv_cluster_id, conversation_id) DO UPDATE SET
+                  distance=excluded.distance,
+                  is_representative=excluded.is_representative
+                """,
+                [
+                    (
+                        conv_cluster_id,
+                        str(m["conversation_id"]),
+                        float(m["distance"]) if m.get("distance") is not None else None,
+                        1 if bool(m.get("is_representative")) else 0,
+                    )
+                    for m in members
+                ],
+            )
+
+    def get_conv_cluster_members(self, conv_cluster_id: int) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.conv_cluster_id, m.conversation_id, m.distance, m.is_representative,
+                       c.title AS conversation_title, c.source,
+                       r.started_at, r.ended_at, r.message_count, r.rollup_text, r.representative_snippets_json
+                FROM conv_cluster_members m
+                LEFT JOIN conversations c ON c.id = m.conversation_id
+                LEFT JOIN conversation_rollups r ON r.conversation_id = m.conversation_id
+                WHERE m.conv_cluster_id = ?
+                ORDER BY m.is_representative DESC, m.distance ASC, m.conversation_id ASC
+                """,
+                (conv_cluster_id,),
+            ).fetchall()
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                item["representative_snippets"] = json.loads(str(item.pop("representative_snippets_json") or "[]"))
+                out.append(item)
+            return out
+
+    def upsert_conv_cluster_label(self, row: dict[str, Any]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO conv_cluster_labels(
+                  conv_cluster_id, label_source, title, summary, tags_json, evidence_hash, prompt_version, model,
+                  tokens_in, tokens_out, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(conv_cluster_id) DO UPDATE SET
+                  label_source=excluded.label_source,
+                  title=excluded.title,
+                  summary=excluded.summary,
+                  tags_json=excluded.tags_json,
+                  evidence_hash=excluded.evidence_hash,
+                  prompt_version=excluded.prompt_version,
+                  model=excluded.model,
+                  tokens_in=excluded.tokens_in,
+                  tokens_out=excluded.tokens_out,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    int(row["conv_cluster_id"]),
+                    str(row.get("label_source") or "heuristic"),
+                    str(row.get("title") or ""),
+                    str(row.get("summary") or ""),
+                    json.dumps(row.get("tags") or []),
+                    str(row.get("evidence_hash") or ""),
+                    str(row.get("prompt_version") or ""),
+                    str(row.get("model") or ""),
+                    int(row["tokens_in"]) if row.get("tokens_in") is not None else None,
+                    int(row["tokens_out"]) if row.get("tokens_out") is not None else None,
+                    str(row.get("created_at") or now),
+                    str(row.get("updated_at") or now),
+                ),
+            )
+
+    def get_conv_cluster_label(self, conv_cluster_id: int) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM conv_cluster_labels WHERE conv_cluster_id = ?",
+                (conv_cluster_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            out = dict(row)
+            out["tags"] = json.loads(str(out.pop("tags_json") or "[]"))
+            return out
+
+    def list_conv_clusters(self) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                  cc.conv_cluster_id,
+                  cc.algo,
+                  cc.params_json,
+                  cc.created_at,
+                  COUNT(cm.conversation_id) AS conversation_count,
+                  COALESCE(SUM(COALESCE(r.message_count, 0)), 0) AS message_count
+                FROM conv_clusters cc
+                LEFT JOIN conv_cluster_members cm ON cm.conv_cluster_id = cc.conv_cluster_id
+                LEFT JOIN conversation_rollups r ON r.conversation_id = cm.conversation_id
+                GROUP BY cc.conv_cluster_id, cc.algo, cc.params_json, cc.created_at
+                ORDER BY conversation_count DESC, cc.conv_cluster_id ASC
+                """
+            ).fetchall()
+            label_rows = conn.execute("SELECT * FROM conv_cluster_labels").fetchall()
+            labels_by_cluster = {int(r["conv_cluster_id"]): dict(r) for r in label_rows}
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                cluster = dict(row)
+                cluster["params"] = json.loads(str(cluster.pop("params_json") or "{}"))
+                label = labels_by_cluster.get(int(cluster["conv_cluster_id"]))
+                if label:
+                    cluster["label"] = {
+                        "title": str(label.get("title") or ""),
+                        "summary": str(label.get("summary") or ""),
+                        "tags": json.loads(str(label.get("tags_json") or "[]")),
+                        "label_source": str(label.get("label_source") or ""),
+                        "evidence_hash": str(label.get("evidence_hash") or ""),
+                    }
+                else:
+                    cluster["label"] = None
+                out.append(cluster)
+            return out
+
     def save_redacted_text(self, message_id: str, redacted_text: str) -> None:
         with self.connection() as conn:
             conn.execute("UPDATE messages SET redacted_text = ? WHERE id = ?", (redacted_text, message_id))
@@ -512,6 +797,67 @@ class SQLiteRepository:
             latest_embedding_at = str(embedding_row["latest_embedding_at"] or "") if embedding_row else ""
             if latest_embedding_at and latest_subcluster_at and latest_subcluster_at < latest_embedding_at:
                 return True
+            return False
+
+    def clusters_stale(self) -> bool:
+        with self.connection() as conn:
+            stats = conn.execute(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM embeddings) AS embedding_count,
+                  (SELECT COUNT(*) FROM clusters) AS cluster_count,
+                  (SELECT COUNT(*) FROM cluster_membership) AS membership_count,
+                  (SELECT MAX(created_at) FROM embeddings) AS latest_embedding_at,
+                  (SELECT MAX(created_at) FROM clusters) AS latest_cluster_at
+                """
+            ).fetchone()
+            if stats is None:
+                return False
+
+            embedding_count = int(stats["embedding_count"] or 0)
+            cluster_count = int(stats["cluster_count"] or 0)
+            membership_count = int(stats["membership_count"] or 0)
+            latest_embedding_at = str(stats["latest_embedding_at"] or "")
+            latest_cluster_at = str(stats["latest_cluster_at"] or "")
+
+            # No embeddings means there is nothing to cluster.
+            if embedding_count < 2:
+                return False
+
+            if cluster_count == 0 or membership_count == 0:
+                return True
+
+            # Guard against partial or stale membership rows.
+            if membership_count != embedding_count:
+                return True
+
+            if latest_embedding_at and (not latest_cluster_at or latest_cluster_at < latest_embedding_at):
+                return True
+
+            baseline_rows = conn.execute(
+                """
+                SELECT c.source, COUNT(*) AS count
+                FROM embeddings e
+                JOIN messages m ON m.id = e.item_id
+                JOIN conversations c ON c.id = m.conversation_id
+                GROUP BY c.source
+                """
+            ).fetchall()
+            member_rows = conn.execute(
+                """
+                SELECT c.source, COUNT(*) AS count
+                FROM cluster_membership cm
+                JOIN messages m ON m.id = cm.message_id
+                JOIN conversations c ON c.id = m.conversation_id
+                GROUP BY c.source
+                """
+            ).fetchall()
+            baseline_counts = {str(r["source"]).upper().strip(): int(r["count"] or 0) for r in baseline_rows}
+            member_counts = {str(r["source"]).upper().strip(): int(r["count"] or 0) for r in member_rows}
+            for source, count in baseline_counts.items():
+                if count > 0 and int(member_counts.get(source, 0)) == 0:
+                    return True
+
             return False
 
     def profile_message_rows(self) -> list[dict[str, Any]]:

@@ -9,23 +9,81 @@ export default function ClusterDetailPage() {
   const [subclusters, setSubclusters] = useState([])
   const [showSubclusters, setShowSubclusters] = useState(false)
   const [activeSubclusterId, setActiveSubclusterId] = useState(null)
+  const [excludeDomainStopwords, setExcludeDomainStopwords] = useState(true)
+  const [showLabelDebug, setShowLabelDebug] = useState(false)
+  const [useSemanticLabels, setUseSemanticLabels] = useState(true)
+  const [showLegacyLabels, setShowLegacyLabels] = useState(false)
 
   useEffect(() => {
-    apiGet(`/clusters/${clusterId}`).then(setDetail)
-    apiGet(`/clusters/${clusterId}/subclusters`).then(res => setSubclusters(res.subclusters || []))
-  }, [clusterId])
+    const qs = new URLSearchParams({
+      exclude_domain_stopwords: String(excludeDomainStopwords),
+      use_semantic_labels: String(useSemanticLabels),
+      show_legacy_labels: String(showLegacyLabels)
+    })
+    apiGet(`/clusters/${clusterId}?${qs.toString()}`).then(setDetail)
+    apiGet(`/clusters/${clusterId}/subclusters?${qs.toString()}`).then(res => setSubclusters(res.subclusters || []))
+  }, [clusterId, excludeDomainStopwords, useSemanticLabels, showLegacyLabels])
 
   if (!detail) return <div>Loading...</div>
   return (
     <section>
       <h2>Cluster Detail</h2>
+      <label>
+        <input
+          type="checkbox"
+          checked={excludeDomainStopwords}
+          onChange={e => setExcludeDomainStopwords(e.target.checked)}
+        />
+        Exclude domain stopwords from labels
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={useSemanticLabels}
+          onChange={e => setUseSemanticLabels(e.target.checked)}
+        />
+        Use semantic labels
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={showLegacyLabels}
+          onChange={e => setShowLegacyLabels(e.target.checked)}
+        />
+        Show legacy labels
+      </label>
       <p><strong>Cluster:</strong> #{detail.cluster_id}</p>
-      <p><strong>Label:</strong> {detail.label}</p>
+      <p>
+        <strong>Label:</strong> {detail.label}{' '}
+        {detail.label_low_signal && <span title={detail.label_warning || 'Label may be low-signal'}>⚠</span>}
+      </p>
+      <p><strong>Legacy label:</strong> {detail.legacy_label || 'N/A'}</p>
+      <p><strong>Semantic subtitle:</strong> {detail.semantic?.subtitle || 'N/A'}</p>
+      <p><strong>Semantic summary:</strong> {detail.semantic?.summary || 'N/A'}</p>
       <p><strong>Size:</strong> {detail.message_count} messages</p>
       <p><strong>Conversations:</strong> {detail.conversations_count}</p>
       <p><strong>% of dataset:</strong> {detail.dataset_percentage}%</p>
       <p><strong>Avg message length:</strong> {detail.average_message_length} characters</p>
       <p><strong>Top keywords:</strong> {detail.top_keywords?.join(', ') || 'N/A'}</p>
+      <p>
+        <button type="button" onClick={() => setShowLabelDebug(v => !v)}>
+          {showLabelDebug ? 'Hide' : 'Show'} Label Debug
+        </button>
+      </p>
+      {showLabelDebug && (
+        <div>
+          <p><strong>Raw top tokens:</strong> {(detail.label_debug?.raw_top_tokens || []).join(', ') || 'N/A'}</p>
+          <p><strong>Final label tokens:</strong> {(detail.label_debug?.final_label_tokens || []).join(', ') || 'N/A'}</p>
+          <h4>Removed by rule</h4>
+          <ul>
+            {Object.entries(detail.label_debug?.removed_by_rule || {}).map(([rule, tokens]) => (
+              <li key={rule}>
+                <strong>{rule}:</strong> {Array.isArray(tokens) ? tokens.join(', ') : 'N/A'}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <p><strong>First seen:</strong> {detail.first_seen}</p>
       <p><strong>Last seen:</strong> {detail.last_seen}</p>
       <p>

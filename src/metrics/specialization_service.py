@@ -13,9 +13,10 @@ class ModelSpecializationService:
 
     def compute(self, level: str = "cluster") -> dict[str, Any]:
         level = (level or "cluster").lower()
-        baseline_counts = self.repo.dataset_source_counts()
+        baseline_counts = _normalize_source_counts(self.repo.dataset_source_counts())
         total_messages = sum(baseline_counts.values())
-        baseline_available = {s: int(baseline_counts.get(s, 0)) > 0 for s in SOURCES}
+        sources = _source_order(baseline_counts.keys())
+        baseline_available = {s: int(baseline_counts.get(s, 0)) > 0 for s in sources}
 
         baseline = {
             s: {
@@ -23,7 +24,7 @@ class ModelSpecializationService:
                 "pct": round((int(baseline_counts.get(s, 0)) / max(1, total_messages)) * 100.0, 2),
                 "p": float(int(baseline_counts.get(s, 0)) / max(1, total_messages)),
             }
-            for s in SOURCES
+            for s in sources
         }
 
         entities = []
@@ -31,7 +32,7 @@ class ModelSpecializationService:
             for row in self.repo.all_subclusters():
                 sid = int(row["id"])
                 message_count = int(row["message_count"] or 0)
-                source_counts = self.repo.subcluster_source_counts(sid)
+                source_counts = _normalize_source_counts(self.repo.subcluster_source_counts(sid))
                 entities.append(
                     self._entity_payload(
                         entity_id=str(sid),
@@ -41,13 +42,14 @@ class ModelSpecializationService:
                         baseline=baseline,
                         baseline_available=baseline_available,
                         dataset_total=total_messages,
+                        sources=sources,
                     )
                 )
         else:
             for row in self.repo.list_clusters():
                 cid = int(row["cluster_id"])
                 message_count = int(row["message_count"] or 0)
-                source_counts = self.repo.cluster_source_counts(cid)
+                source_counts = _normalize_source_counts(self.repo.cluster_source_counts(cid))
                 payload = self._entity_payload(
                     entity_id=str(cid),
                     label=str(row["label"]),
@@ -56,6 +58,7 @@ class ModelSpecializationService:
                     baseline=baseline,
                     baseline_available=baseline_available,
                     dataset_total=total_messages,
+                    sources=sources,
                 )
                 payload["cluster_id"] = cid
                 entities.append(payload)
@@ -78,21 +81,21 @@ class ModelSpecializationService:
         baseline: dict[str, dict[str, float | int]],
         baseline_available: dict[str, bool],
         dataset_total: int,
+        sources: list[str],
     ) -> dict[str, Any]:
         percents = {
-            s: round((int(source_counts.get(s, 0)) / max(1, message_count)) * 100.0, 2)
-            for s in SOURCES
+            s: round((int(source_counts.get(s, 0)) / max(1, message_count)) * 100.0, 2) for s in sources
         }
-        p_cluster = {s: float(int(source_counts.get(s, 0)) / max(1, message_count)) for s in SOURCES}
+        p_cluster = {s: float(int(source_counts.get(s, 0)) / max(1, message_count)) for s in sources}
         lift: dict[str, float | None] = {}
-        for s in SOURCES:
+        for s in sources:
             base_p = float(baseline[s]["p"])
             if base_p <= 0 or not baseline_available.get(s, False):
                 lift[s] = None
             else:
                 lift[s] = round(p_cluster[s] / base_p, 4)
 
-        valid_sources = [s for s in SOURCES if lift[s] is not None]
+        valid_sources = [s for s in sources if lift[s] is not None]
         dominant_source: str | None = None
         dominant_lift: float | None = None
         if valid_sources:
@@ -105,10 +108,35 @@ class ModelSpecializationService:
             "message_count": message_count,
             "dataset_percentage": round((message_count / max(1, dataset_total)) * 100.0, 2),
             "source_breakdown": {
-                "counts": {s: int(source_counts.get(s, 0)) for s in SOURCES},
+                "counts": {s: int(source_counts.get(s, 0)) for s in sources},
                 "percents": percents,
             },
-            "lift_by_source": {s: float(lift[s]) for s in SOURCES if lift[s] is not None},
+            "lift_by_source": {s: float(lift[s]) for s in sources if lift[s] is not None},
             "dominant_source": dominant_source,
             "dominant_lift": dominant_lift,
         }
+
+
+def _normalize_source_counts(raw: dict[str, int]) -> dict[str, int]:
+    normalized: dict[str, int] = {}
+    for key, count in (raw or {}).items():
+        source = str(key or "").upper().strip()
+        if not source:
+            continue
+        normalized[source] = normalized.get(source, 0) + int(count or 0)
+    return normalized
+
+
+def _source_order(source_keys: Any) -> list[str]:
+    seen = set()
+    ordered: list[str] = []
+    for source in SOURCES:
+        if source not in seen:
+            ordered.append(source)
+            seen.add(source)
+    for source in sorted(str(s).upper().strip() for s in source_keys):
+        if not source or source in seen:
+            continue
+        ordered.append(source)
+        seen.add(source)
+    return ordered

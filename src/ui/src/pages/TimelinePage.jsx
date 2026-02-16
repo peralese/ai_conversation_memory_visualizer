@@ -13,6 +13,8 @@ export default function TimelinePage() {
   const [topN, setTopN] = useState(15)
   const [useSubclusters, setUseSubclusters] = useState(false)
   const [excludeDomainStopwords, setExcludeDomainStopwords] = useState(true)
+  const [useSemanticLabels, setUseSemanticLabels] = useState(true)
+  const [showLegacyLabels, setShowLegacyLabels] = useState(false)
 
   useEffect(() => {
     const qs = new URLSearchParams({
@@ -21,11 +23,13 @@ export default function TimelinePage() {
       min_messages: String(minMessages),
       top_n: String(topN),
       use_subclusters: String(useSubclusters),
-      exclude_domain_stopwords: String(excludeDomainStopwords)
+      exclude_domain_stopwords: String(excludeDomainStopwords),
+      use_semantic_labels: String(useSemanticLabels),
+      show_legacy_labels: String(showLegacyLabels)
     })
     apiGet(`/metrics/topic-evolution?${qs.toString()}`).then(setEvolution)
-    apiGet('/metrics/idea-half-life').then(setHalfLife)
-  }, [source, minMessages, topN, useSubclusters, excludeDomainStopwords])
+    apiGet(`/metrics/idea-half-life?${qs.toString()}`).then(setHalfLife)
+  }, [source, minMessages, topN, useSubclusters, excludeDomainStopwords, useSemanticLabels, showLegacyLabels])
 
   const heatmapModel = useMemo(() => {
     const weekSet = new Set()
@@ -164,6 +168,22 @@ export default function TimelinePage() {
             onChange={e => setExcludeDomainStopwords(e.target.checked)}
           />
           Exclude domain stopwords from labels
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={useSemanticLabels}
+            onChange={e => setUseSemanticLabels(e.target.checked)}
+          />
+          Use semantic labels
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={showLegacyLabels}
+            onChange={e => setShowLegacyLabels(e.target.checked)}
+          />
+          Show legacy labels
         </label>
       </div>
       <div ref={chartRef} style={{ width: '100%', height: 460 }} />

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from src.clustering.service import ClusteringService
+from src.env_loader import load_dotenv
 from src.embeddings.service import EmbeddingService
 from src.metrics.drift_service import DriftService
 from src.metrics.modes_service import ModesService
@@ -12,6 +13,8 @@ from src.metrics.service import MetricsService
 from src.pipeline import import_file
 from src.reports.generator import CognitiveSummaryReportGenerator
 from src.storage.repository import SQLiteRepository
+
+load_dotenv()
 
 
 def build_parser() -> argparse.ArgumentParser:

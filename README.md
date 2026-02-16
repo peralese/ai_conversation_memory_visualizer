@@ -104,6 +104,7 @@ python3 -m src.cli report --format json --out reports/cognitive_summary.json
 ## OpenAI Embeddings
 - Default provider is OpenAI if `OPENAI_API_KEY` is set.
 - Falls back to a local deterministic stub provider when not set.
+- `.env` is loaded automatically at startup (API, CLI, and conversation clustering runner).
 
 ## Redaction
 `src/redaction/redactor.py`
@@ -118,6 +119,51 @@ python3 -m src.cli report --format json --out reports/cognitive_summary.json
   - `T0` is first mention.
   - Weekly activity is measured from `T0`.
   - Half-life is first week where volume drops below 50% of cluster peak weekly volume.
+
+## Domain Stopwords and Label Quality
+- Domain stopwords are loaded from `config/domain_stopwords.txt`.
+- Add one token per line (case-insensitive) to suppress ingestion/UI/code noise in labels and top keywords.
+- This list is applied on top of English stopwords for:
+  - cluster labels
+  - cluster detail top keywords
+  - subcluster labels
+  - timeline heatmap labels (cluster/subcluster mode)
+- UI defaults to `Exclude domain stopwords from labels = ON`; you can turn it off for debugging.
+- Cluster detail includes a `Label Debug` panel showing:
+  - top raw tokens
+  - tokens removed by rule
+  - final tokens used for labeling
+
+## Semantic Labels
+- The backend generates deterministic semantic labels per cluster from representative samples and conversation titles.
+- API responses now include both:
+  - `legacy_label`: keyword-style label
+  - `semantic`: `{ title, subtitle, summary }`
+- Label display is configurable via query params on cluster/timeline/drift endpoints:
+  - `use_semantic_labels` (default `true`)
+  - `show_legacy_labels` (default `false`)
+- Semantic label normalization is reusable as `normalize_for_label(text)` in `src/clustering/semantic_labels.py`.
+
+## Conversation-Level Clustering
+- Parallel pipeline (does not replace message-level clustering):
+  1. Conversation rollups
+  2. Conversation embeddings
+  3. Conversation clustering
+  4. Evidence packet building
+  5. Cached GPT/heuristic labels
+- Runner:
+```bash
+python3 scripts/run_conversation_clustering.py --db data/memory_viz.db --k 8
+```
+- Useful flags:
+  - `--force-reembed`
+  - `--force-recluster`
+  - `--force-relabel`
+  - `--max-gpt 20`
+  - `--min-seconds-between-gpt 2`
+  - `--dry-run` (build packets + heuristic labels only; no GPT calls)
+- Env vars:
+  - `OPENAI_API_KEY` (optional; without it labels fall back to deterministic heuristics)
 
 ## Tests
 ```bash

@@ -8,6 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
 from src.clustering.service import ClusteringService
+from src.env_loader import load_dotenv
+from src.labeling.evidence_packet import build_cluster_evidence_packet
 from src.embeddings.service import EmbeddingService
 from src.metrics.drift_service import DriftService
 from src.metrics.modes_service import ModesService
@@ -17,6 +19,8 @@ from src.pipeline import import_file
 from src.redaction.redactor import RedactionConfig
 from src.reports.generator import CognitiveSummaryReportGenerator
 from src.storage.repository import SQLiteRepository
+
+load_dotenv()
 
 app = FastAPI(title="AI Conversation Memory Visualizer")
 app.add_middleware(
@@ -92,10 +96,14 @@ def conversations(q: str | None = None) -> list[dict]:
 def clusters(
     include_subclusters: bool = False,
     exclude_domain_stopwords: bool = True,
+    use_semantic_labels: bool = True,
+    show_legacy_labels: bool = False,
 ) -> list[dict]:
     return clustering_service.list_clusters(
         exclude_domain_stopwords=exclude_domain_stopwords,
         include_subclusters=include_subclusters,
+        use_semantic_labels=use_semantic_labels,
+        show_legacy_labels=show_legacy_labels,
     )
 
 
@@ -104,12 +112,16 @@ def cluster_detail(
     cluster_id: int,
     exclude_domain_stopwords: bool = True,
     include_subclusters: bool = False,
+    use_semantic_labels: bool = True,
+    show_legacy_labels: bool = False,
 ) -> dict:
     try:
         detail = clustering_service.cluster_detail(
             cluster_id,
             exclude_domain_stopwords=exclude_domain_stopwords,
             include_subclusters=include_subclusters,
+            use_semantic_labels=use_semantic_labels,
+            show_legacy_labels=show_legacy_labels,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -123,11 +135,15 @@ def cluster_detail(
 def cluster_subclusters(
     cluster_id: int,
     exclude_domain_stopwords: bool = True,
+    use_semantic_labels: bool = True,
+    show_legacy_labels: bool = False,
 ) -> dict:
     try:
         return clustering_service.subclusters_for_cluster(
             cluster_id,
             exclude_domain_stopwords=exclude_domain_stopwords,
+            use_semantic_labels=use_semantic_labels,
+            show_legacy_labels=show_legacy_labels,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -146,6 +162,8 @@ def topic_evolution(
     top_n: int = 15,
     use_subclusters: bool = False,
     exclude_domain_stopwords: bool = True,
+    use_semantic_labels: bool = True,
+    show_legacy_labels: bool = False,
 ) -> list[dict]:
     if use_subclusters:
         return clustering_service.subcluster_topic_evolution(
@@ -153,6 +171,8 @@ def topic_evolution(
             min_messages=min_messages,
             top_n=top_n,
             exclude_domain_stopwords=exclude_domain_stopwords,
+            use_semantic_labels=use_semantic_labels,
+            show_legacy_labels=show_legacy_labels,
         )
 
     labels = {
@@ -160,6 +180,8 @@ def topic_evolution(
         for c in clustering_service.list_clusters(
             exclude_domain_stopwords=exclude_domain_stopwords,
             include_subclusters=False,
+            use_semantic_labels=use_semantic_labels,
+            show_legacy_labels=show_legacy_labels,
         )
     }
     return metrics_service.topic_evolution(
@@ -172,8 +194,21 @@ def topic_evolution(
 
 
 @app.get("/metrics/idea-half-life")
-def idea_half_life() -> list[dict]:
-    return metrics_service.idea_half_life()
+def idea_half_life(
+    exclude_domain_stopwords: bool = True,
+    use_semantic_labels: bool = True,
+    show_legacy_labels: bool = False,
+) -> list[dict]:
+    labels = {
+        int(c["cluster_id"]): str(c["label"])
+        for c in clustering_service.list_clusters(
+            exclude_domain_stopwords=exclude_domain_stopwords,
+            include_subclusters=False,
+            use_semantic_labels=use_semantic_labels,
+            show_legacy_labels=show_legacy_labels,
+        )
+    }
+    return metrics_service.idea_half_life(label_by_cluster=labels)
 
 
 @app.get("/metrics/profile")
@@ -183,12 +218,31 @@ def profile(top_n: int = 30) -> dict:
 
 @app.get("/metrics/model_specialization")
 def model_specialization(level: str = "cluster") -> dict:
+    if (level or "cluster").lower() == "cluster":
+        clustering_service.ensure_clusters_fresh()
     return specialization_service.compute(level=level)
 
 
 @app.get("/metrics/drift")
-def drift(level: str = "cluster", cluster_id: str | None = None) -> dict:
-    return drift_service.detail(level=level, cluster_id=cluster_id)
+def drift(
+    level: str = "cluster",
+    cluster_id: str | None = None,
+    exclude_domain_stopwords: bool = True,
+    use_semantic_labels: bool = True,
+    show_legacy_labels: bool = False,
+) -> dict:
+    label_map: dict[str, str] | None = None
+    if level == "cluster":
+        label_map = {
+            str(int(c["cluster_id"])): str(c["label"])
+            for c in clustering_service.list_clusters(
+                exclude_domain_stopwords=exclude_domain_stopwords,
+                include_subclusters=False,
+                use_semantic_labels=use_semantic_labels,
+                show_legacy_labels=show_legacy_labels,
+            )
+        }
+    return drift_service.detail(level=level, cluster_id=cluster_id, label_by_entity=label_map)
 
 
 @app.get("/metrics/modes")
@@ -213,3 +267,87 @@ def cognitive_summary(format: str = "json"):
         md = report_generator.generate_markdown_report(report)
         return PlainTextResponse(md)
     return report
+
+
+@app.get("/api/conv_clusters")
+def conv_clusters(
+    use_semantic_labels: bool = True,
+    show_legacy_labels: bool = False,
+) -> list[dict]:
+    rows = repo.list_conv_clusters()
+    out: list[dict] = []
+    for row in rows:
+        label_info = row.get("label") or {}
+        semantic_title = str(label_info.get("title") or "").strip()
+        legacy_label = _conv_cluster_legacy_label(int(row["conv_cluster_id"]))
+        label = legacy_label
+        if use_semantic_labels and semantic_title:
+            label = semantic_title
+            if show_legacy_labels and semantic_title.lower() != legacy_label.lower():
+                label = f"{semantic_title} (legacy: {legacy_label})"
+        out.append(
+            {
+                **row,
+                "label_display": label,
+                "legacy_label": legacy_label,
+                "semantic": {
+                    "title": semantic_title or legacy_label,
+                    "summary": str(label_info.get("summary") or ""),
+                    "tags": list(label_info.get("tags") or []),
+                    "label_source": str(label_info.get("label_source") or ""),
+                },
+            }
+        )
+    return out
+
+
+@app.get("/api/conv_clusters/{conv_cluster_id}")
+def conv_cluster_detail(
+    conv_cluster_id: int,
+    use_semantic_labels: bool = True,
+    show_legacy_labels: bool = False,
+) -> dict:
+    rows = repo.list_conv_clusters()
+    cluster = next((r for r in rows if int(r["conv_cluster_id"]) == int(conv_cluster_id)), None)
+    if cluster is None:
+        raise HTTPException(status_code=404, detail=f"Unknown conversation cluster: {conv_cluster_id}")
+
+    label_info = cluster.get("label") or {}
+    semantic_title = str(label_info.get("title") or "").strip()
+    legacy_label = _conv_cluster_legacy_label(conv_cluster_id)
+    label = legacy_label
+    if use_semantic_labels and semantic_title:
+        label = semantic_title
+        if show_legacy_labels and semantic_title.lower() != legacy_label.lower():
+            label = f"{semantic_title} (legacy: {legacy_label})"
+
+    members = repo.get_conv_cluster_members(conv_cluster_id)
+    evidence = build_cluster_evidence_packet(repo, conv_cluster_id)
+    return {
+        **cluster,
+        "label_display": label,
+        "legacy_label": legacy_label,
+        "semantic": {
+            "title": semantic_title or legacy_label,
+            "summary": str(label_info.get("summary") or ""),
+            "tags": list(label_info.get("tags") or []),
+            "label_source": str(label_info.get("label_source") or ""),
+        },
+        "members": members,
+        "evidence_packet": evidence,
+    }
+
+
+def _conv_cluster_legacy_label(conv_cluster_id: int) -> str:
+    members = repo.get_conv_cluster_members(conv_cluster_id)
+    counter: dict[str, int] = {}
+    for member in members:
+        rollup_text = str(member.get("rollup_text") or "")
+        for token in rollup_text.split():
+            if len(token) < 3:
+                continue
+            counter[token] = counter.get(token, 0) + 1
+    if not counter:
+        return f"Conversation Cluster {conv_cluster_id}"
+    top = sorted(counter.items(), key=lambda kv: kv[1], reverse=True)[:3]
+    return ", ".join(token for token, _ in top)

@@ -36,16 +36,28 @@ class CognitiveSummaryReportGenerator:
             for src in ("CHATGPT", "CLAUDE", "GEMINI")
         }
 
-        clusters = self.clustering.list_clusters(exclude_domain_stopwords=True, include_subclusters=False)
+        clusters = self.clustering.list_clusters(
+            exclude_domain_stopwords=True,
+            include_subclusters=False,
+            use_semantic_labels=True,
+            show_legacy_labels=False,
+        )
+        report_label_by_cluster = {
+            int(c["cluster_id"]): _report_label(str(c.get("label") or ""), str(c.get("legacy_label") or ""))
+            for c in clusters
+        }
         top_clusters = sorted(clusters, key=lambda c: float(c.get("dataset_percentage", 0)), reverse=True)[:10]
 
         specialization = self.specialization.compute(level="cluster")
         spec_by_cluster = {int(item.get("cluster_id") or item.get("id")): item for item in specialization["items"]}
 
-        drift_summary = self.drift.summary(level="cluster")
+        drift_summary = self.drift.summary(
+            level="cluster",
+            label_by_entity={str(cid): label for cid, label in report_label_by_cluster.items()},
+        )
         drift_by_cluster = {int(item["cluster_id"]): item for item in drift_summary if str(item.get("cluster_id", "")).isdigit()}
 
-        half_life = self.metrics.idea_half_life()
+        half_life = self.metrics.idea_half_life(label_by_cluster=report_label_by_cluster)
         half_life_by_cluster = {int(item["cluster_id"]): item for item in half_life}
 
         cluster_modes = []
@@ -332,3 +344,11 @@ def _top_clusters_by_mode(rows: list[dict[str, Any]], top_n: int = 5) -> dict[st
     for mode, items in grouped.items():
         out[mode] = sorted(items, key=lambda r: float(r.get("dominant_weight") or 0.0), reverse=True)[:top_n]
     return out
+
+
+def _report_label(semantic_label: str, legacy_label: str) -> str:
+    semantic_label = str(semantic_label or "").strip()
+    legacy_label = str(legacy_label or "").strip()
+    if semantic_label and legacy_label and semantic_label.lower() != legacy_label.lower():
+        return f"{semantic_label} (legacy: {legacy_label})"
+    return semantic_label or legacy_label or "Unlabeled topic"

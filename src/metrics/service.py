@@ -87,7 +87,7 @@ class MetricsService:
             )
         return out
 
-    def idea_half_life(self) -> list[dict]:
+    def idea_half_life(self, label_by_cluster: dict[int, str] | None = None) -> list[dict]:
         events = self.repo.topic_events()
         by_cluster: dict[int, dict[date, int]] = defaultdict(lambda: defaultdict(int))
         for e in events:
@@ -95,6 +95,7 @@ class MetricsService:
             by_cluster[int(e["cluster_id"])][_iso_week_start(ts)] += 1
 
         out: list[dict] = []
+        labels = label_by_cluster or {int(c["cluster_id"]): str(c["label"]) for c in self.repo.list_clusters()}
         for cluster in self.repo.list_clusters():
             cid = int(cluster["cluster_id"])
             weekly = by_cluster[cid]
@@ -120,7 +121,7 @@ class MetricsService:
             out.append(
                 {
                     "cluster_id": cid,
-                    "label": cluster["label"],
+                    "label": labels.get(cid, str(cluster["label"])),
                     "first_mention": datetime.combine(first, datetime.min.time()).isoformat(),
                     "peak_weekly_volume": peak,
                     "half_life_weeks": half_life_weeks,

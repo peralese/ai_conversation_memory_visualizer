@@ -87,3 +87,74 @@ def test_specialization_skips_zero_baseline_sources(tmp_path):
     assert "CHATGPT" not in row["lift_by_source"]
     assert row["dominant_source"] in {"CLAUDE", "GEMINI"}
     assert row["dominant_lift"] is not None
+
+
+def test_specialization_only_chatgpt_dataset(tmp_path):
+    repo = SQLiteRepository(str(tmp_path / "spec_only_chatgpt.db"))
+    now = datetime.now(timezone.utc).isoformat()
+
+    repo.upsert_bundle(_bundle("gpt_only", SourceType.CHATGPT, [f"g{i}" for i in range(1, 6)]))
+
+    with repo.connection() as conn:
+        conn.execute(
+            "INSERT INTO clusters(cluster_id, label, centroid_json, first_seen, last_seen, message_count, created_at) VALUES (1,'only gpt',NULL,?,?,5,?)",
+            (now, now, now),
+        )
+        conn.executemany(
+            "INSERT INTO cluster_membership(cluster_id, message_id) VALUES (1, ?)",
+            [(f"g{i}",) for i in range(1, 6)],
+        )
+
+    out = ModelSpecializationService(repo).compute(level="cluster")
+    assert out["baseline"]["CHATGPT"]["count"] == 5
+    assert out["baseline"]["CHATGPT"]["pct"] == 100.0
+    assert out["baseline_available"]["CHATGPT"] is True
+
+    row = out["items"][0]
+    assert row["source_breakdown"]["counts"]["CHATGPT"] == 5
+    assert row["source_breakdown"]["percents"]["CHATGPT"] == 100.0
+    assert row["lift_by_source"]["CHATGPT"] == 1.0
+    assert row["dominant_source"] == "CHATGPT"
+
+
+def test_specialization_normalizes_source_case(tmp_path):
+    repo = SQLiteRepository(str(tmp_path / "spec_case_normalization.db"))
+    now = datetime.now(timezone.utc).isoformat()
+
+    with repo.connection() as conn:
+        conn.execute(
+            "INSERT INTO conversations(id, source, title, created_at, updated_at, participants_json, tags_json, raw_metadata_json) VALUES ('c1','ChatGPT','c1',?,?, '[]','[]','{}')",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO conversations(id, source, title, created_at, updated_at, participants_json, tags_json, raw_metadata_json) VALUES ('c2','CLAUDE','c2',?,?, '[]','[]','{}')",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO messages(id, conversation_id, timestamp, speaker_role, original_text, redacted_text, parent_message_id, token_count, raw_metadata_json) VALUES ('m1','c1',?,'user','a',NULL,NULL,NULL,'{}')",
+            (now,),
+        )
+        conn.execute(
+            "INSERT INTO messages(id, conversation_id, timestamp, speaker_role, original_text, redacted_text, parent_message_id, token_count, raw_metadata_json) VALUES ('m2','c1',?,'assistant','b',NULL,NULL,NULL,'{}')",
+            (now,),
+        )
+        conn.execute(
+            "INSERT INTO messages(id, conversation_id, timestamp, speaker_role, original_text, redacted_text, parent_message_id, token_count, raw_metadata_json) VALUES ('m3','c2',?,'assistant','c',NULL,NULL,NULL,'{}')",
+            (now,),
+        )
+        conn.execute(
+            "INSERT INTO clusters(cluster_id, label, centroid_json, first_seen, last_seen, message_count, created_at) VALUES (1,'mixed',NULL,?,?,3,?)",
+            (now, now, now),
+        )
+        conn.executemany(
+            "INSERT INTO cluster_membership(cluster_id, message_id) VALUES (1, ?)",
+            [("m1",), ("m2",), ("m3",)],
+        )
+
+    out = ModelSpecializationService(repo).compute(level="cluster")
+    assert out["baseline"]["CHATGPT"]["count"] == 2
+    assert out["baseline_available"]["CHATGPT"] is True
+    row = out["items"][0]
+    assert row["source_breakdown"]["counts"]["CHATGPT"] == 2
+    assert row["source_breakdown"]["percents"]["CHATGPT"] > 0
+    assert row["lift_by_source"]["CHATGPT"] > 0

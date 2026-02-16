@@ -8,6 +8,7 @@ import ModelSpecializationPage from './pages/ModelSpecializationPage'
 import DriftPage from './pages/DriftPage'
 import ReportPage from './pages/ReportPage'
 import CognitiveModesPage from './pages/CognitiveModesPage'
+import ConversationClustersPage from './pages/ConversationClustersPage'
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <NavLink to="/">Import</NavLink>
           <NavLink to="/conversations">Conversations</NavLink>
           <NavLink to="/clusters">Clusters</NavLink>
+          <NavLink to="/conv-clusters">Conversation Clusters</NavLink>
           <NavLink to="/timeline">Timeline</NavLink>
           <NavLink to="/specialization">Specialization</NavLink>
           <NavLink to="/drift">Drift</NavLink>
@@ -30,6 +32,7 @@ export default function App() {
           <Route path="/" element={<ImportPage />} />
           <Route path="/conversations" element={<ConversationsPage />} />
           <Route path="/clusters" element={<ClusterExplorerPage />} />
+          <Route path="/conv-clusters" element={<ConversationClustersPage />} />
           <Route path="/timeline" element={<TimelinePage />} />
           <Route path="/clusters/:clusterId" element={<ClusterDetailPage />} />
           <Route path="/specialization" element={<ModelSpecializationPage />} />

@@ -53,8 +53,11 @@ export default function ModelSpecializationPage() {
             <th>% dataset</th>
             <th>Msgs</th>
             <th>Claude %</th>
+            <th>Claude lift</th>
             <th>Gemini %</th>
+            <th>Gemini lift</th>
             <th>ChatGPT %</th>
+            <th>ChatGPT lift</th>
             <th>Dominant</th>
           </tr>
         </thead>
@@ -66,8 +69,11 @@ export default function ModelSpecializationPage() {
               <td>{item.dataset_percentage}%</td>
               <td>{item.message_count}</td>
               <td>{item.source_breakdown?.percents?.CLAUDE ?? 0}%</td>
+              <td>{item.lift_by_source?.CLAUDE == null ? 'N/A' : `x${Number(item.lift_by_source.CLAUDE).toFixed(2)}`}</td>
               <td>{item.source_breakdown?.percents?.GEMINI ?? 0}%</td>
+              <td>{item.lift_by_source?.GEMINI == null ? 'N/A' : `x${Number(item.lift_by_source.GEMINI).toFixed(2)}`}</td>
               <td>{item.source_breakdown?.percents?.CHATGPT ?? 0}%</td>
+              <td>{item.lift_by_source?.CHATGPT == null ? 'N/A' : `x${Number(item.lift_by_source.CHATGPT).toFixed(2)}`}</td>
               <td>{item.dominant_source ? `${item.dominant_source} x${Number(item.dominant_lift || 0).toFixed(2)}` : 'N/A'}</td>
             </tr>
           ))}

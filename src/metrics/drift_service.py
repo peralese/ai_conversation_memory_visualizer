@@ -50,7 +50,7 @@ class DriftService:
         if self.repo.drift_stale(level):
             self.compute_and_persist(level)
 
-    def summary(self, level: str = "cluster") -> list[dict[str, Any]]:
+    def summary(self, level: str = "cluster", label_by_entity: dict[str, str] | None = None) -> list[dict[str, Any]]:
         level = (level or "cluster").lower()
         self.ensure_fresh(level)
         rows = self.repo.drift_rows(level)
@@ -58,7 +58,7 @@ class DriftService:
         for row in rows:
             by_entity[str(row["entity_id"])].append(row)
 
-        labels = _labels_for_level(self.repo, level)
+        labels = label_by_entity or _labels_for_level(self.repo, level)
         out = []
         for entity_id, items in by_entity.items():
             items_sorted = sorted(items, key=lambda r: r["bucket_start_date"])
@@ -86,11 +86,16 @@ class DriftService:
         out.sort(key=lambda r: r["cumulative_drift"], reverse=True)
         return out
 
-    def detail(self, level: str = "cluster", cluster_id: str | None = None) -> dict[str, Any]:
+    def detail(
+        self,
+        level: str = "cluster",
+        cluster_id: str | None = None,
+        label_by_entity: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         level = (level or "cluster").lower()
         self.ensure_fresh(level)
         if not cluster_id:
-            return {"level": level, "items": self.summary(level)}
+            return {"level": level, "items": self.summary(level, label_by_entity=label_by_entity)}
 
         rows = self.repo.drift_rows(level, entity_id=str(cluster_id))
         rows = sorted(rows, key=lambda r: r["bucket_start_date"])
@@ -106,7 +111,7 @@ class DriftService:
                     "week_to_week_drift": None if drift is None else round(drift, 6),
                 }
             )
-        labels = _labels_for_level(self.repo, level)
+        labels = label_by_entity or _labels_for_level(self.repo, level)
         return {
             "level": level,
             "cluster_id": str(cluster_id),

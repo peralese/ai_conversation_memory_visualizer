@@ -8,6 +8,14 @@ def test_detect_chatgpt_by_filename():
     assert detect_source("fixtures/chatgpt_export_sample.json") == SourceType.CHATGPT
 
 
+def test_detect_chatgpt_from_zip_fixture(tmp_path):
+    zip_path = tmp_path / "openai_export.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.write("fixtures/chatgpt_export_sample.json", arcname="conversations.json")
+        zf.writestr("user.json", '{"name":"example"}')
+    assert detect_source(str(zip_path)) == SourceType.CHATGPT
+
+
 def test_detect_unknown_for_invalid_json(tmp_path):
     p = tmp_path / "foo.json"
     p.write_text("not-json", encoding="utf-8")
