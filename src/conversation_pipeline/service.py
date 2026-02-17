@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from typing import Any
 
 from src.conversation_pipeline.clustering import ConversationClusteringConfig, cluster_conversations
@@ -9,6 +10,8 @@ from src.conversation_pipeline.rollup import RollupConfig, build_conversation_ro
 from src.labeling.evidence_packet import EvidenceConfig, build_cluster_evidence_packet
 from src.labeling.gpt_labeler import GPTClusterLabeler, GPTLabelerConfig
 from src.storage.repository import SQLiteRepository
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -31,15 +34,20 @@ def run_conversation_pipeline(repo: SQLiteRepository, config: ConversationPipeli
     labeler = GPTClusterLabeler(repo, cfg.labeling)
     generated = 0
     cached = 0
+    label_errors = 0
     labeled_cluster_ids: list[int] = []
     for conv_cluster_id in cluster_result.get("cluster_ids", []):
-        packet = build_cluster_evidence_packet(repo, int(conv_cluster_id), cfg.evidence)
-        result = labeler.generate_label(int(conv_cluster_id), packet, force_refresh=cfg.force_relabel)
-        labeled_cluster_ids.append(int(conv_cluster_id))
-        if result.get("cached"):
-            cached += 1
-        else:
-            generated += 1
+        try:
+            packet = build_cluster_evidence_packet(repo, int(conv_cluster_id), cfg.evidence)
+            result = labeler.generate_label(int(conv_cluster_id), packet, force_refresh=cfg.force_relabel)
+            labeled_cluster_ids.append(int(conv_cluster_id))
+            if result.get("cached"):
+                cached += 1
+            else:
+                generated += 1
+        except Exception:
+            label_errors += 1
+            logger.exception("Failed to label conversation cluster %s", conv_cluster_id)
 
     return {
         "rollups": len(rollup_ids),
@@ -49,6 +57,7 @@ def run_conversation_pipeline(repo: SQLiteRepository, config: ConversationPipeli
         "cluster_members": int(cluster_result.get("members") or 0),
         "labels_generated": generated,
         "labels_cached": cached,
+        "label_errors": label_errors,
         "cluster_ids": labeled_cluster_ids,
         "dry_run": bool(cfg.labeling.dry_run),
     }

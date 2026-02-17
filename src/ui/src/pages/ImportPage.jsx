@@ -18,9 +18,14 @@ export default function ImportPage() {
   }
 
   async function runPipeline() {
-    await apiPost('/embed?redact_pii=' + (redact ? 'true' : 'false'))
-    const result = await apiPost('/cluster')
-    setMessage(`Pipeline finished: ${JSON.stringify(result)}`)
+    try {
+      const embed = await apiPost('/embed?redact_pii=' + (redact ? 'true' : 'false'))
+      const cluster = await apiPost('/cluster')
+      const conv = await apiPost('/pipeline/conversation?dry_run=true')
+      setMessage(`Pipeline finished:\n${JSON.stringify({ embed, cluster, conversation: conv }, null, 2)}`)
+    } catch (err) {
+      setMessage(`Pipeline failed: ${err.message}`)
+    }
   }
 
   return (

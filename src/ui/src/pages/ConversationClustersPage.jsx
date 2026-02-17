@@ -5,17 +5,24 @@ export default function ConversationClustersPage() {
   const [rows, setRows] = useState([])
   const [selected, setSelected] = useState(null)
   const [detail, setDetail] = useState(null)
+  const [counts, setCounts] = useState(null)
   const [useSemanticLabels, setUseSemanticLabels] = useState(true)
   const [showLegacyLabels, setShowLegacyLabels] = useState(false)
 
   useEffect(() => {
+    apiGet('/api/conv_clusters/debug_counts').then(setCounts).catch(() => setCounts(null))
     const qs = new URLSearchParams({
       use_semantic_labels: String(useSemanticLabels),
       show_legacy_labels: String(showLegacyLabels)
     })
     apiGet(`/api/conv_clusters?${qs.toString()}`).then(res => {
       setRows(res || [])
-      if (res && res.length > 0) setSelected(String(res[0].conv_cluster_id))
+      if (res && res.length > 0) {
+        setSelected(String(res[0].conv_cluster_id))
+      } else {
+        setSelected(null)
+        setDetail(null)
+      }
     })
   }, [useSemanticLabels, showLegacyLabels])
 
@@ -49,6 +56,12 @@ export default function ConversationClustersPage() {
           Show legacy labels
         </label>
       </div>
+      {counts && (
+        <p style={{ marginTop: '0.5rem' }}>
+          conv_clusters: {counts.conv_clusters} | conv_cluster_members: {counts.conv_cluster_members} | conversation_embeddings:{' '}
+          {counts.conversation_embeddings} | conversations: {counts.conversations}
+        </p>
+      )}
 
       <table>
         <thead>
@@ -72,6 +85,12 @@ export default function ConversationClustersPage() {
           ))}
         </tbody>
       </table>
+      {rows.length === 0 && (
+        <p style={{ marginTop: '0.75rem' }}>
+          No conversation clusters yet. Run <code>Run Embedding + Clustering</code> on Import to populate conversation embeddings and
+          conversation clusters.
+        </p>
+      )}
 
       {detail && (
         <div style={{ marginTop: '1rem' }}>

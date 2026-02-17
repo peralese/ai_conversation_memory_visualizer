@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -8,8 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
 from src.clustering.service import ClusteringService
+from src.conversation_pipeline.clustering import ConversationClusteringConfig
+from src.conversation_pipeline.embeddings import ConversationEmbeddingConfig
+from src.conversation_pipeline.service import ConversationPipelineConfig, run_conversation_pipeline
 from src.env_loader import load_dotenv
 from src.labeling.evidence_packet import build_cluster_evidence_packet
+from src.labeling.gpt_labeler import GPTLabelerConfig
 from src.embeddings.service import EmbeddingService
 from src.metrics.drift_service import DriftService
 from src.metrics.modes_service import ModesService
@@ -21,6 +26,7 @@ from src.reports.generator import CognitiveSummaryReportGenerator
 from src.storage.repository import SQLiteRepository
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Conversation Memory Visualizer")
 app.add_middleware(
@@ -85,6 +91,52 @@ def embed(since: str | None = None, redact_pii: bool = False) -> dict:
 @app.post("/cluster")
 def cluster(k: int | None = None) -> dict:
     return clustering_service.cluster_embeddings(k=k)
+
+
+@app.post("/pipeline/conversation")
+def conversation_pipeline_run(
+    k: int | None = None,
+    force_reembed: bool = False,
+    force_recluster: bool = False,
+    force_relabel: bool = False,
+    dry_run: bool = True,
+    max_gpt: int = 100,
+    min_seconds_between_gpt: float = 1.5,
+) -> dict:
+    try:
+        result = run_conversation_pipeline(
+            repo,
+            ConversationPipelineConfig(
+                embeddings=ConversationEmbeddingConfig(force_reembed=force_reembed),
+                clustering=ConversationClusteringConfig(
+                    k=k,
+                    force_recluster=force_recluster,
+                    algo="kmeans",
+                ),
+                labeling=GPTLabelerConfig(
+                    dry_run=dry_run,
+                    max_requests_per_run=max_gpt,
+                    min_seconds_between_requests=min_seconds_between_gpt,
+                ),
+                force_relabel=force_relabel,
+            ),
+        )
+    except Exception as e:
+        logger.exception("Conversation pipeline failed")
+        raise HTTPException(status_code=500, detail=f"Conversation pipeline failed: {e}") from e
+
+    counts = repo.conv_cluster_debug_counts()
+    logger.info(
+        "Conversation pipeline complete: rollups=%s embedded=%s clusters=%s members=%s labels_generated=%s labels_cached=%s counts=%s",
+        result.get("rollups"),
+        result.get("embedded"),
+        result.get("clusters"),
+        result.get("cluster_members"),
+        result.get("labels_generated"),
+        result.get("labels_cached"),
+        counts,
+    )
+    return {**result, "debug_counts": counts}
 
 
 @app.get("/conversations")
@@ -274,12 +326,17 @@ def conv_clusters(
     use_semantic_labels: bool = True,
     show_legacy_labels: bool = False,
 ) -> list[dict]:
+    logger.info("Conversation cluster table counts: %s", repo.conv_cluster_debug_counts())
     rows = repo.list_conv_clusters()
     out: list[dict] = []
     for row in rows:
+        conv_cluster_id = int(row["conv_cluster_id"])
+        members = repo.get_conv_cluster_members(conv_cluster_id)
+        source_breakdown = _conv_cluster_source_breakdown(members)
+        dominant_source = _dominant_source(source_breakdown)
         label_info = row.get("label") or {}
         semantic_title = str(label_info.get("title") or "").strip()
-        legacy_label = _conv_cluster_legacy_label(int(row["conv_cluster_id"]))
+        legacy_label = _conv_cluster_legacy_label(conv_cluster_id, members=members)
         label = legacy_label
         if use_semantic_labels and semantic_title:
             label = semantic_title
@@ -288,8 +345,11 @@ def conv_clusters(
         out.append(
             {
                 **row,
+                "cluster_id": conv_cluster_id,
                 "label_display": label,
                 "legacy_label": legacy_label,
+                "source_breakdown": source_breakdown,
+                "dominant_source": dominant_source,
                 "semantic": {
                     "title": semantic_title or legacy_label,
                     "summary": str(label_info.get("summary") or ""),
@@ -299,6 +359,11 @@ def conv_clusters(
             }
         )
     return out
+
+
+@app.get("/api/conv_clusters/debug_counts")
+def conv_cluster_debug_counts() -> dict[str, int]:
+    return repo.conv_cluster_debug_counts()
 
 
 @app.get("/api/conv_clusters/{conv_cluster_id}")
@@ -322,11 +387,15 @@ def conv_cluster_detail(
             label = f"{semantic_title} (legacy: {legacy_label})"
 
     members = repo.get_conv_cluster_members(conv_cluster_id)
+    source_breakdown = _conv_cluster_source_breakdown(members)
     evidence = build_cluster_evidence_packet(repo, conv_cluster_id)
     return {
         **cluster,
+        "cluster_id": int(conv_cluster_id),
         "label_display": label,
         "legacy_label": legacy_label,
+        "source_breakdown": source_breakdown,
+        "dominant_source": _dominant_source(source_breakdown),
         "semantic": {
             "title": semantic_title or legacy_label,
             "summary": str(label_info.get("summary") or ""),
@@ -338,10 +407,10 @@ def conv_cluster_detail(
     }
 
 
-def _conv_cluster_legacy_label(conv_cluster_id: int) -> str:
-    members = repo.get_conv_cluster_members(conv_cluster_id)
+def _conv_cluster_legacy_label(conv_cluster_id: int, members: list[dict] | None = None) -> str:
+    rows = members if members is not None else repo.get_conv_cluster_members(conv_cluster_id)
     counter: dict[str, int] = {}
-    for member in members:
+    for member in rows:
         rollup_text = str(member.get("rollup_text") or "")
         for token in rollup_text.split():
             if len(token) < 3:
@@ -351,3 +420,17 @@ def _conv_cluster_legacy_label(conv_cluster_id: int) -> str:
         return f"Conversation Cluster {conv_cluster_id}"
     top = sorted(counter.items(), key=lambda kv: kv[1], reverse=True)[:3]
     return ", ".join(token for token, _ in top)
+
+
+def _conv_cluster_source_breakdown(members: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for member in members:
+        source = str(member.get("source") or "").upper().strip() or "UNKNOWN"
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def _dominant_source(source_breakdown: dict[str, int]) -> str | None:
+    if not source_breakdown:
+        return None
+    return max(source_breakdown.items(), key=lambda kv: kv[1])[0]

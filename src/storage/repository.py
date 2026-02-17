@@ -403,6 +403,21 @@ class SQLiteRepository:
                 out.append(cluster)
             return out
 
+    def conv_cluster_debug_counts(self) -> dict[str, int]:
+        with self.connection() as conn:
+            conv_clusters = int(conn.execute("SELECT COUNT(*) FROM conv_clusters").fetchone()[0])
+            conv_cluster_members = int(conn.execute("SELECT COUNT(*) FROM conv_cluster_members").fetchone()[0])
+            conv_cluster_labels = int(conn.execute("SELECT COUNT(*) FROM conv_cluster_labels").fetchone()[0])
+            conversation_embeddings = int(conn.execute("SELECT COUNT(*) FROM conversation_embeddings").fetchone()[0])
+            conversations = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
+            return {
+                "conv_clusters": conv_clusters,
+                "conv_cluster_members": conv_cluster_members,
+                "conv_cluster_labels": conv_cluster_labels,
+                "conversation_embeddings": conversation_embeddings,
+                "conversations": conversations,
+            }
+
     def save_redacted_text(self, message_id: str, redacted_text: str) -> None:
         with self.connection() as conn:
             conn.execute("UPDATE messages SET redacted_text = ? WHERE id = ?", (redacted_text, message_id))
