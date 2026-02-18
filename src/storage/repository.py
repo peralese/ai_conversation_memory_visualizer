@@ -365,6 +365,70 @@ class SQLiteRepository:
             out["tags"] = json.loads(str(out.pop("tags_json") or "[]"))
             return out
 
+    def get_conv_cluster_semantic_label(self, conv_cluster_id: int) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM conv_cluster_semantic_labels WHERE conv_cluster_id = ?",
+                (conv_cluster_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            out = dict(row)
+            out["tags"] = json.loads(str(out.pop("tags_json") or "[]"))
+            return out
+
+    def upsert_conv_cluster_semantic_label(
+        self,
+        conv_cluster_id: int,
+        label: str,
+        summary: str,
+        tags: list[str],
+        provider: str,
+        evidence_hash: str,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connection() as conn:
+            existing = conn.execute(
+                "SELECT created_at FROM conv_cluster_semantic_labels WHERE conv_cluster_id = ?",
+                (conv_cluster_id,),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO conv_cluster_semantic_labels(
+                  conv_cluster_id, label, summary, tags_json, provider, evidence_hash, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(conv_cluster_id) DO UPDATE SET
+                  label=excluded.label,
+                  summary=excluded.summary,
+                  tags_json=excluded.tags_json,
+                  provider=excluded.provider,
+                  evidence_hash=excluded.evidence_hash,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    int(conv_cluster_id),
+                    str(label or ""),
+                    str(summary or ""),
+                    json.dumps(tags or []),
+                    str(provider or "heuristic"),
+                    str(evidence_hash or ""),
+                    str(existing["created_at"]) if existing and existing["created_at"] else now,
+                    now,
+                ),
+            )
+
+    def list_conv_clusters_missing_semantic_labels(self, force: bool = False) -> list[int]:
+        with self.connection() as conn:
+            rows = conn.execute("SELECT conv_cluster_id FROM conv_clusters ORDER BY conv_cluster_id ASC").fetchall()
+            cluster_ids = [int(r["conv_cluster_id"]) for r in rows]
+            if force:
+                return cluster_ids
+            labeled = {
+                int(r["conv_cluster_id"])
+                for r in conn.execute("SELECT conv_cluster_id FROM conv_cluster_semantic_labels").fetchall()
+            }
+            return [cid for cid in cluster_ids if cid not in labeled]
+
     def list_conv_clusters(self) -> list[dict[str, Any]]:
         with self.connection() as conn:
             rows = conn.execute(
@@ -383,8 +447,10 @@ class SQLiteRepository:
                 ORDER BY conversation_count DESC, cc.conv_cluster_id ASC
                 """
             ).fetchall()
-            label_rows = conn.execute("SELECT * FROM conv_cluster_labels").fetchall()
+            label_rows = conn.execute("SELECT * FROM conv_cluster_semantic_labels").fetchall()
             labels_by_cluster = {int(r["conv_cluster_id"]): dict(r) for r in label_rows}
+            legacy_rows = conn.execute("SELECT * FROM conv_cluster_labels").fetchall()
+            legacy_by_cluster = {int(r["conv_cluster_id"]): dict(r) for r in legacy_rows}
             out: list[dict[str, Any]] = []
             for row in rows:
                 cluster = dict(row)
@@ -392,14 +458,24 @@ class SQLiteRepository:
                 label = labels_by_cluster.get(int(cluster["conv_cluster_id"]))
                 if label:
                     cluster["label"] = {
-                        "title": str(label.get("title") or ""),
+                        "title": str(label.get("label") or ""),
                         "summary": str(label.get("summary") or ""),
                         "tags": json.loads(str(label.get("tags_json") or "[]")),
-                        "label_source": str(label.get("label_source") or ""),
+                        "label_source": str(label.get("provider") or ""),
                         "evidence_hash": str(label.get("evidence_hash") or ""),
                     }
                 else:
-                    cluster["label"] = None
+                    legacy = legacy_by_cluster.get(int(cluster["conv_cluster_id"]))
+                    if legacy:
+                        cluster["label"] = {
+                            "title": str(legacy.get("title") or ""),
+                            "summary": str(legacy.get("summary") or ""),
+                            "tags": json.loads(str(legacy.get("tags_json") or "[]")),
+                            "label_source": str(legacy.get("label_source") or ""),
+                            "evidence_hash": str(legacy.get("evidence_hash") or ""),
+                        }
+                    else:
+                        cluster["label"] = None
                 out.append(cluster)
             return out
 
@@ -414,6 +490,9 @@ class SQLiteRepository:
                 "conv_clusters": conv_clusters,
                 "conv_cluster_members": conv_cluster_members,
                 "conv_cluster_labels": conv_cluster_labels,
+                "conv_cluster_semantic_labels": int(
+                    conn.execute("SELECT COUNT(*) FROM conv_cluster_semantic_labels").fetchone()[0]
+                ),
                 "conversation_embeddings": conversation_embeddings,
                 "conversations": conversations,
             }
@@ -658,6 +737,70 @@ class SQLiteRepository:
                 out["centroid"] = None
             out.pop("centroid_json", None)
             return out
+
+    def get_cluster_semantic_label(self, cluster_id: int) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM cluster_semantic_labels WHERE cluster_id = ?",
+                (cluster_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            out = dict(row)
+            out["tags"] = json.loads(str(out.pop("tags_json") or "[]"))
+            return out
+
+    def upsert_cluster_semantic_label(
+        self,
+        cluster_id: int,
+        label: str,
+        summary: str,
+        tags: list[str],
+        provider: str,
+        evidence_hash: str,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connection() as conn:
+            existing = conn.execute(
+                "SELECT created_at FROM cluster_semantic_labels WHERE cluster_id = ?",
+                (cluster_id,),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO cluster_semantic_labels(
+                  cluster_id, label, summary, tags_json, provider, evidence_hash, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cluster_id) DO UPDATE SET
+                  label=excluded.label,
+                  summary=excluded.summary,
+                  tags_json=excluded.tags_json,
+                  provider=excluded.provider,
+                  evidence_hash=excluded.evidence_hash,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    int(cluster_id),
+                    str(label or ""),
+                    str(summary or ""),
+                    json.dumps(tags or []),
+                    str(provider or "heuristic"),
+                    str(evidence_hash or ""),
+                    str(existing["created_at"]) if existing and existing["created_at"] else now,
+                    now,
+                ),
+            )
+
+    def list_clusters_missing_semantic_labels(self, force: bool = False) -> list[int]:
+        with self.connection() as conn:
+            rows = conn.execute("SELECT cluster_id FROM clusters ORDER BY cluster_id ASC").fetchall()
+            cluster_ids = [int(r["cluster_id"]) for r in rows]
+            if force:
+                return cluster_ids
+            labeled = {
+                int(r["cluster_id"])
+                for r in conn.execute("SELECT cluster_id FROM cluster_semantic_labels").fetchall()
+            }
+            return [cid for cid in cluster_ids if cid not in labeled]
 
     def cluster_context_stats(self, cluster_id: int) -> dict[str, Any]:
         with self.connection() as conn:

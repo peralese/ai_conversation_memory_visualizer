@@ -201,7 +201,38 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_conv_cluster_members_cluster ON conv_cluster_members(conv_cluster_id);
         CREATE INDEX IF NOT EXISTS idx_conv_cluster_members_conv ON conv_cluster_members(conversation_id);
         """,
-    )
+    ),
+    (
+        6,
+        """
+        CREATE TABLE IF NOT EXISTS cluster_semantic_labels (
+            cluster_id INTEGER PRIMARY KEY,
+            label TEXT NOT NULL,
+            summary TEXT,
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            provider TEXT NOT NULL,
+            evidence_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (cluster_id) REFERENCES clusters(cluster_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS conv_cluster_semantic_labels (
+            conv_cluster_id INTEGER PRIMARY KEY,
+            label TEXT NOT NULL,
+            summary TEXT,
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            provider TEXT NOT NULL,
+            evidence_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (conv_cluster_id) REFERENCES conv_clusters(conv_cluster_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cluster_semantic_provider ON cluster_semantic_labels(provider);
+        CREATE INDEX IF NOT EXISTS idx_conv_cluster_semantic_provider ON conv_cluster_semantic_labels(provider);
+        """,
+    ),
 ]
 
 

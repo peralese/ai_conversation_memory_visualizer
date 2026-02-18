@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { apiGet } from '../api'
+import { apiGet, apiPost } from '../api'
 
 export default function ConversationClustersPage() {
   const [rows, setRows] = useState([])
@@ -8,6 +8,7 @@ export default function ConversationClustersPage() {
   const [counts, setCounts] = useState(null)
   const [useSemanticLabels, setUseSemanticLabels] = useState(true)
   const [showLegacyLabels, setShowLegacyLabels] = useState(false)
+  const [labeling, setLabeling] = useState(false)
 
   useEffect(() => {
     apiGet('/api/conv_clusters/debug_counts').then(setCounts).catch(() => setCounts(null))
@@ -35,6 +36,21 @@ export default function ConversationClustersPage() {
     apiGet(`/api/conv_clusters/${encodeURIComponent(selected)}?${qs.toString()}`).then(setDetail)
   }, [selected, useSemanticLabels, showLegacyLabels])
 
+  async function generateSemanticLabels() {
+    setLabeling(true)
+    try {
+      await apiPost('/api/labels/conv-clusters', { force: false })
+      const qs = new URLSearchParams({
+        use_semantic_labels: String(useSemanticLabels),
+        show_legacy_labels: String(showLegacyLabels)
+      })
+      const res = await apiGet(`/api/conv_clusters?${qs.toString()}`)
+      setRows(res || [])
+    } finally {
+      setLabeling(false)
+    }
+  }
+
   return (
     <section>
       <h2>Conversation Clusters</h2>
@@ -55,6 +71,9 @@ export default function ConversationClustersPage() {
           />
           Show legacy labels
         </label>
+        <button type="button" onClick={generateSemanticLabels} disabled={labeling}>
+          {labeling ? 'Generating labels...' : 'Generate semantic labels'}
+        </button>
       </div>
       {counts && (
         <p style={{ marginTop: '0.5rem' }}>

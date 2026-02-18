@@ -1,17 +1,113 @@
 from __future__ import annotations
 
+import asyncio
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import os
 import re
 import time
 from typing import Any
 
-from src.labeling.evidence_packet import EvidenceConfig
 from src.storage.repository import SQLiteRepository
 
-PROMPT_VERSION = "conv_label_v1"
+PROMPT_VERSION = "semantic_label_v1"
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SemanticLabelerConfig:
+    model: str = "gpt-4o-mini"
+    rpm: int = 60
+    concurrency: int = 2
+    max_retries: int = 4
+    dry_run: bool = False
+
+
+class SemanticLabeler:
+    def __init__(self, config: SemanticLabelerConfig | None = None):
+        self.config = config or SemanticLabelerConfig()
+        self.provider = "openai" if os.getenv("OPENAI_API_KEY") else "heuristic"
+        if self.provider != "openai":
+            logger.info("OPENAI_API_KEY missing; semantic labels will use heuristic provider.")
+        self._sem = asyncio.Semaphore(max(1, int(self.config.concurrency)))
+        self._request_times: deque[float] = deque()
+        self._rate_lock = asyncio.Lock()
+        self._client = None
+
+    async def label_cluster(self, packet: dict[str, Any]) -> dict[str, Any]:
+        return await self._label_packet(packet, kind="cluster")
+
+    async def label_conv_cluster(self, packet: dict[str, Any]) -> dict[str, Any]:
+        return await self._label_packet(packet, kind="conv_cluster")
+
+    async def _label_packet(self, packet: dict[str, Any], *, kind: str) -> dict[str, Any]:
+        if self.config.dry_run or self.provider != "openai":
+            label = _heuristic_label(packet, kind=kind)
+            return {**label, "provider": "heuristic"}
+
+        async with self._sem:
+            await self._wait_for_rate_slot()
+            payload = await self._call_openai_with_retry(packet, kind=kind)
+            label = _sanitize_label_payload(payload)
+            return {**label, "provider": "openai"}
+
+    async def _wait_for_rate_slot(self) -> None:
+        rpm = max(1, int(self.config.rpm))
+        window = 60.0
+        while True:
+            async with self._rate_lock:
+                now = time.monotonic()
+                while self._request_times and now - self._request_times[0] >= window:
+                    self._request_times.popleft()
+                if len(self._request_times) < rpm:
+                    self._request_times.append(now)
+                    return
+                sleep_for = max(0.05, window - (now - self._request_times[0]))
+            await asyncio.sleep(sleep_for)
+
+    async def _call_openai_with_retry(self, packet: dict[str, Any], *, kind: str) -> dict[str, Any]:
+        backoff = 1.0
+        for attempt in range(max(1, int(self.config.max_retries))):
+            try:
+                return await asyncio.to_thread(self._call_openai, packet, kind)
+            except Exception:
+                if attempt >= max(1, int(self.config.max_retries)) - 1:
+                    raise
+                await asyncio.sleep(backoff)
+                backoff *= 2.0
+        raise RuntimeError("OpenAI labeling failed")
+
+    def _call_openai(self, packet: dict[str, Any], kind: str) -> dict[str, Any]:
+        if self._client is None:
+            from openai import OpenAI  # type: ignore
+
+            self._client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        system_prompt = (
+            "You are an analyst creating concise semantic topic labels for clustered conversations. "
+            "Return strict JSON with keys: label, summary, tags. "
+            "Constraints: label <= 5 words; summary 1-2 sentences; tags 3-8 short strings. "
+            "Avoid boilerplate, generic code tokens, and stopwords."
+        )
+        user_prompt = (
+            f"Cluster type: {kind}\n"
+            "Evidence packet JSON follows:\n"
+            f"{json.dumps(packet, sort_keys=True)}"
+        )
+        response = self._client.chat.completions.create(
+            model=self.config.model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        content = response.choices[0].message.content if response.choices else "{}"
+        return json.loads(content or "{}")
 
 
 @dataclass
@@ -24,12 +120,22 @@ class GPTLabelerConfig:
 
 
 class GPTClusterLabeler:
+    """Backward-compatible wrapper used by conversation pipeline."""
+
     def __init__(self, repo: SQLiteRepository, config: GPTLabelerConfig | None = None):
         self.repo = repo
         self.config = config or GPTLabelerConfig()
-        self._last_request_at = 0.0
+        rpm = max(1, int(60.0 / max(0.05, float(self.config.min_seconds_between_requests))))
+        self._labeler = SemanticLabeler(
+            SemanticLabelerConfig(
+                model=self.config.model,
+                rpm=rpm,
+                concurrency=2,
+                max_retries=self.config.max_retries,
+                dry_run=self.config.dry_run,
+            )
+        )
         self._requests_made = 0
-        self._client = None
 
     def generate_label(
         self,
@@ -39,147 +145,101 @@ class GPTClusterLabeler:
         force_refresh: bool = False,
     ) -> dict[str, Any]:
         evidence_hash = str(packet.get("evidence_hash") or "")
-        cached = self.repo.get_conv_cluster_label(conv_cluster_id)
+        cached = self.repo.get_conv_cluster_semantic_label(conv_cluster_id)
         if (
             not force_refresh
             and cached is not None
             and str(cached.get("evidence_hash") or "") == evidence_hash
-            and str(cached.get("prompt_version") or "") == PROMPT_VERSION
-            and str(cached.get("model") or "") == self.config.model
         ):
             return {
                 "conv_cluster_id": conv_cluster_id,
                 "cached": True,
-                "label_source": str(cached.get("label_source") or "heuristic"),
-                "title": str(cached.get("title") or ""),
+                "label_source": str(cached.get("provider") or "heuristic"),
+                "title": str(cached.get("label") or ""),
                 "summary": str(cached.get("summary") or ""),
                 "tags": list(cached.get("tags") or []),
             }
 
-        if self.config.dry_run:
-            label = _heuristic_label(packet)
-            self._persist(conv_cluster_id, label, evidence_hash=evidence_hash, label_source="heuristic", tokens_in=None, tokens_out=None)
-            return {"conv_cluster_id": conv_cluster_id, "cached": False, **label, "label_source": "heuristic"}
+        if self._requests_made >= int(self.config.max_requests_per_run):
+            payload = _heuristic_label(packet, kind="conv_cluster")
+            provider = "heuristic"
+        else:
+            payload, _tokens_in, _tokens_out = self._call_openai(packet)
+            provider = str(payload.get("provider") or "openai")
+            self._requests_made += 1
 
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key or self._requests_made >= self.config.max_requests_per_run:
-            label = _heuristic_label(packet)
-            self._persist(conv_cluster_id, label, evidence_hash=evidence_hash, label_source="heuristic", tokens_in=None, tokens_out=None)
-            return {"conv_cluster_id": conv_cluster_id, "cached": False, **label, "label_source": "heuristic"}
+        label = str(payload.get("label") or "").strip() or f"Conversation Cluster {conv_cluster_id}"
+        summary = str(payload.get("summary") or "").strip()
+        tags = [str(t).strip() for t in (payload.get("tags") or []) if str(t).strip()]
 
-        payload, tokens_in, tokens_out = self._call_with_retry(packet)
-        label = _sanitize_label_payload(payload)
-        self._persist(conv_cluster_id, label, evidence_hash=evidence_hash, label_source="gpt", tokens_in=tokens_in, tokens_out=tokens_out)
-        return {"conv_cluster_id": conv_cluster_id, "cached": False, **label, "label_source": "gpt"}
+        self.repo.upsert_conv_cluster_semantic_label(
+            conv_cluster_id=int(conv_cluster_id),
+            label=label,
+            summary=summary,
+            tags=tags,
+            provider=provider,
+            evidence_hash=evidence_hash,
+        )
 
-    def _persist(
-        self,
-        conv_cluster_id: int,
-        label: dict[str, Any],
-        *,
-        evidence_hash: str,
-        label_source: str,
-        tokens_in: int | None,
-        tokens_out: int | None,
-    ) -> None:
+        # Keep legacy table in sync for backward compatibility.
         now = datetime.now(timezone.utc).isoformat()
         self.repo.upsert_conv_cluster_label(
             {
-                "conv_cluster_id": conv_cluster_id,
-                "label_source": label_source,
-                "title": label["title"],
-                "summary": label["summary"],
-                "tags": label["tags"],
+                "conv_cluster_id": int(conv_cluster_id),
+                "label_source": provider,
+                "title": label,
+                "summary": summary,
+                "tags": tags,
                 "evidence_hash": evidence_hash,
                 "prompt_version": PROMPT_VERSION,
                 "model": self.config.model,
-                "tokens_in": tokens_in,
-                "tokens_out": tokens_out,
+                "tokens_in": None,
+                "tokens_out": None,
                 "created_at": now,
                 "updated_at": now,
             }
         )
-
-    def _call_with_retry(self, packet: dict[str, Any]) -> tuple[dict[str, Any], int | None, int | None]:
-        backoff = 1.0
-        for attempt in range(self.config.max_retries):
-            try:
-                self._throttle()
-                payload, tokens_in, tokens_out = self._call_openai(packet)
-                return payload, tokens_in, tokens_out
-            except Exception:
-                if attempt >= self.config.max_retries - 1:
-                    raise
-                time.sleep(backoff)
-                backoff *= 2.0
-        raise RuntimeError("Failed to get GPT label")
-
-    def _throttle(self) -> None:
-        elapsed = time.time() - self._last_request_at
-        wait_for = self.config.min_seconds_between_requests - elapsed
-        if wait_for > 0:
-            time.sleep(wait_for)
+        return {
+            "conv_cluster_id": conv_cluster_id,
+            "cached": False,
+            "label_source": provider,
+            "title": label,
+            "summary": summary,
+            "tags": tags,
+        }
 
     def _call_openai(self, packet: dict[str, Any]) -> tuple[dict[str, Any], int | None, int | None]:
-        if self._client is None:
-            from openai import OpenAI  # type: ignore
-
-            self._client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-        system_prompt = (
-            "You are an analyst. Produce a concise topic label and summary for a cluster of conversations. "
-            "Avoid generic tokens like id/file/str/click/run. Prefer concrete domains. "
-            "Return strict JSON with keys: title, summary, tags."
-        )
-        user_prompt = (
-            "Use this evidence packet JSON:\n"
-            f"{json.dumps(packet, sort_keys=True)}\n\n"
-            "Return JSON with:\n"
-            "title: 3-7 words\n"
-            "summary: 1-2 sentences\n"
-            "tags: 5-12 short tags"
-        )
-
-        response = self._client.chat.completions.create(
-            model=self.config.model,
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        self._requests_made += 1
-        self._last_request_at = time.time()
-
-        content = response.choices[0].message.content if response.choices else "{}"
-        parsed = json.loads(content or "{}")
-        usage = response.usage
-        tokens_in = int(usage.prompt_tokens) if usage and usage.prompt_tokens is not None else None
-        tokens_out = int(usage.completion_tokens) if usage and usage.completion_tokens is not None else None
-        return parsed, tokens_in, tokens_out
+        payload = asyncio.run(self._labeler.label_conv_cluster(packet))
+        return payload, None, None
 
 
-def _heuristic_label(packet: dict[str, Any]) -> dict[str, Any]:
+def _heuristic_label(packet: dict[str, Any], *, kind: str) -> dict[str, Any]:
     terms = [str(t) for t in (packet.get("top_terms") or []) if str(t).strip()]
-    title_terms = terms[:4] if terms else ["Conversation", "Cluster"]
-    title = " ".join(title_terms[:4]).title()
-    subtitle_terms = terms[4:10]
+    if not terms:
+        label = "Conversation Cluster" if kind == "conv_cluster" else "Topic Cluster"
+        return {
+            "label": label,
+            "summary": f"This {kind.replace('_', ' ')} groups related discussions with overlapping intents.",
+            "tags": ["cluster", "topic", "conversation"],
+        }
+    label = " ".join(terms[:4]).title()
     summary = (
-        f"This conversation cluster is mostly about {title.lower()}. "
-        f"Common threads include: {', '.join(subtitle_terms) if subtitle_terms else 'related workflows and planning'}."
+        f"This {kind.replace('_', ' ')} is mostly about {label.lower()}. "
+        f"Common threads include: {', '.join(terms[4:9]) if len(terms) > 4 else ', '.join(terms[:3])}."
     )
-    tags = terms[:10] if terms else ["conversation", "cluster"]
+    tags = terms[:8]
     return {
-        "title": _truncate(re.sub(r"\s+", " ", title).strip(), 60),
-        "summary": _truncate(re.sub(r"\s+", " ", summary).strip(), 280),
+        "label": _truncate(label, 60),
+        "summary": _truncate(summary, 280),
         "tags": tags,
     }
 
 
 def _sanitize_label_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    title = _truncate(str(payload.get("title") or "Conversation Cluster").strip(), 60)
+    label = _truncate(str(payload.get("label") or "Topic Cluster").strip(), 60)
+    label = re.sub(r"\s+", " ", label)
     summary = _truncate(str(payload.get("summary") or "").strip(), 280)
+
     tags_raw = payload.get("tags")
     if isinstance(tags_raw, list):
         tags = [str(t).strip() for t in tags_raw if str(t).strip()]
@@ -188,8 +248,8 @@ def _sanitize_label_payload(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         tags = []
     if not tags:
-        tags = [tok for tok in re.findall(r"[a-z0-9_-]+", title.lower()) if len(tok) > 2]
-    return {"title": title, "summary": summary, "tags": tags[:12]}
+        tags = [tok for tok in re.findall(r"[a-z0-9_-]+", label.lower()) if len(tok) >= 3]
+    return {"label": label, "summary": summary, "tags": tags[:8]}
 
 
 def _truncate(text: str, limit: int) -> str:

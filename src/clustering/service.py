@@ -114,11 +114,16 @@ class ClusteringService:
             records = records_by_cluster.get(cid, [])
             info = label_artifacts.get(cid)
             legacy_label = info.label if info else str(cluster.get("label") or "Unlabeled topic")
+            stored_semantic = self.repo.get_cluster_semantic_label(cid)
             semantic = semantic_labels.get(cid)
+            semantic_title = str(stored_semantic.get("label") or "").strip() if stored_semantic else ""
+            semantic_summary = str(stored_semantic.get("summary") or "").strip() if stored_semantic else ""
             semantic_payload = {
-                "title": semantic.title if semantic else legacy_label,
+                "title": semantic_title or (semantic.title if semantic else legacy_label),
                 "subtitle": semantic.subtitle if semantic else "",
-                "summary": semantic.summary if semantic else "",
+                "summary": semantic_summary or (semantic.summary if semantic else ""),
+                "tags": list(stored_semantic.get("tags") or []) if stored_semantic else [],
+                "provider": str(stored_semantic.get("provider") or "") if stored_semantic else "",
             }
             if info:
                 cluster["label"] = legacy_label
@@ -177,14 +182,19 @@ class ClusteringService:
             exclude_domain_stopwords=exclude_domain_stopwords,
         )
         info = label_artifacts.get(int(cluster_id))
+        stored_semantic = self.repo.get_cluster_semantic_label(int(cluster_id))
         semantic = semantic_labels.get(int(cluster_id))
         records = records_by_cluster.get(int(cluster_id), [])
         top_keywords = info.terms if info else []
         legacy_label = info.label if info else str(cluster.get("label") or "Unlabeled topic")
+        semantic_title = str(stored_semantic.get("label") or "").strip() if stored_semantic else ""
+        semantic_summary = str(stored_semantic.get("summary") or "").strip() if stored_semantic else ""
         semantic_payload = {
-            "title": semantic.title if semantic else legacy_label,
+            "title": semantic_title or (semantic.title if semantic else legacy_label),
             "subtitle": semantic.subtitle if semantic else "",
-            "summary": semantic.summary if semantic else "",
+            "summary": semantic_summary or (semantic.summary if semantic else ""),
+            "tags": list(stored_semantic.get("tags") or []) if stored_semantic else [],
+            "provider": str(stored_semantic.get("provider") or "") if stored_semantic else "",
         }
         cluster["label"] = _display_label(
             legacy_label,

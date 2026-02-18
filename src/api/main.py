@@ -13,8 +13,9 @@ from src.conversation_pipeline.clustering import ConversationClusteringConfig
 from src.conversation_pipeline.embeddings import ConversationEmbeddingConfig
 from src.conversation_pipeline.service import ConversationPipelineConfig, run_conversation_pipeline
 from src.env_loader import load_dotenv
-from src.labeling.evidence_packet import build_cluster_evidence_packet
-from src.labeling.gpt_labeler import GPTLabelerConfig
+from src.labeling.evidence import build_conv_cluster_evidence_packet
+from src.labeling.gpt_labeler import GPTLabelerConfig, SemanticLabelerConfig
+from src.labeling.service import SemanticLabelService
 from src.embeddings.service import EmbeddingService
 from src.metrics.drift_service import DriftService
 from src.metrics.modes_service import ModesService
@@ -45,6 +46,7 @@ specialization_service = ModelSpecializationService(repo)
 drift_service = DriftService(repo)
 report_generator = CognitiveSummaryReportGenerator(repo)
 modes_service = ModesService(repo)
+semantic_label_service = SemanticLabelService(repo, config=SemanticLabelerConfig())
 
 
 @app.get("/health")
@@ -388,7 +390,7 @@ def conv_cluster_detail(
 
     members = repo.get_conv_cluster_members(conv_cluster_id)
     source_breakdown = _conv_cluster_source_breakdown(members)
-    evidence = build_cluster_evidence_packet(repo, conv_cluster_id)
+    evidence = build_conv_cluster_evidence_packet(repo, conv_cluster_id)
     return {
         **cluster,
         "cluster_id": int(conv_cluster_id),
@@ -405,6 +407,52 @@ def conv_cluster_detail(
         "members": members,
         "evidence_packet": evidence,
     }
+
+
+@app.post("/api/labels/clusters/{cluster_id}")
+def label_one_cluster(cluster_id: int, payload: dict | None = None) -> dict:
+    force = bool((payload or {}).get("force", False))
+    return semantic_label_service.label_one_cluster(cluster_id=cluster_id, force=force)
+
+
+@app.post("/api/labels/clusters")
+def label_all_clusters(payload: dict | None = None) -> dict:
+    body = payload or {}
+    return semantic_label_service.label_all_clusters(
+        force=bool(body.get("force", False)),
+        limit=int(body["limit"]) if body.get("limit") is not None else None,
+    )
+
+
+@app.post("/api/labels/conv-clusters/{conv_cluster_id}")
+def label_one_conv_cluster(conv_cluster_id: int, payload: dict | None = None) -> dict:
+    force = bool((payload or {}).get("force", False))
+    return semantic_label_service.label_one_conv_cluster(conv_cluster_id=conv_cluster_id, force=force)
+
+
+@app.post("/api/labels/conv-clusters")
+def label_all_conv_clusters(payload: dict | None = None) -> dict:
+    body = payload or {}
+    return semantic_label_service.label_all_conv_clusters(
+        force=bool(body.get("force", False)),
+        limit=int(body["limit"]) if body.get("limit") is not None else None,
+    )
+
+
+@app.get("/api/labels/clusters/{cluster_id}")
+def get_cluster_label(cluster_id: int) -> dict:
+    row = repo.get_cluster_semantic_label(cluster_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No semantic label for cluster {cluster_id}")
+    return row
+
+
+@app.get("/api/labels/conv-clusters/{conv_cluster_id}")
+def get_conv_cluster_label(conv_cluster_id: int) -> dict:
+    row = repo.get_conv_cluster_semantic_label(conv_cluster_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No semantic label for conversation cluster {conv_cluster_id}")
+    return row
 
 
 def _conv_cluster_legacy_label(conv_cluster_id: int, members: list[dict] | None = None) -> str:

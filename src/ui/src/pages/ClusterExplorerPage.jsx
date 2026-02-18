@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { apiGet } from '../api'
+import { apiGet, apiPost } from '../api'
 
 export default function ClusterExplorerPage() {
   const [clusters, setClusters] = useState([])
@@ -10,6 +10,7 @@ export default function ClusterExplorerPage() {
   const [excludeDomainStopwords, setExcludeDomainStopwords] = useState(true)
   const [useSemanticLabels, setUseSemanticLabels] = useState(true)
   const [showLegacyLabels, setShowLegacyLabels] = useState(false)
+  const [labeling, setLabeling] = useState(false)
 
   useEffect(() => {
     apiGet('/metrics/model_specialization?level=cluster').then(res => {
@@ -49,6 +50,23 @@ export default function ClusterExplorerPage() {
     apiGet(`/clusters?${qs.toString()}`).then(setClusters)
   }, [excludeDomainStopwords, useSemanticLabels, showLegacyLabels])
 
+  async function generateSemanticLabels() {
+    setLabeling(true)
+    try {
+      await apiPost('/api/labels/clusters', { force: false })
+      const qs = new URLSearchParams({
+        include_subclusters: 'true',
+        exclude_domain_stopwords: String(excludeDomainStopwords),
+        use_semantic_labels: String(useSemanticLabels),
+        show_legacy_labels: String(showLegacyLabels)
+      })
+      const refreshed = await apiGet(`/clusters?${qs.toString()}`)
+      setClusters(refreshed)
+    } finally {
+      setLabeling(false)
+    }
+  }
+
   function toggle(clusterId) {
     setExpanded(prev => ({ ...prev, [clusterId]: !prev[clusterId] }))
   }
@@ -80,6 +98,9 @@ export default function ClusterExplorerPage() {
         />
         Show legacy labels
       </label>
+      <button type="button" onClick={generateSemanticLabels} disabled={labeling}>
+        {labeling ? 'Generating labels...' : 'Generate semantic labels'}
+      </button>
       <ul>
         {clusters.map(c => (
           <li key={c.cluster_id} title={c.preview_snippet || ''}>
